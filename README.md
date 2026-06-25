@@ -34,6 +34,13 @@ HypothesisOS/
 └── research_ledger.tsv  # Hard record of Hypothesis -> Expected -> Actual BPB
 ```
 
+## Prompt Caching & System Prompt
+To maximize LLM cost-efficiency and inference speed, HypothesisOS heavily leverages **Prompt Caching**. 
+- The master agent policy is defined in `.agents/system_prompt.txt`.
+- The system prompt is kept completely **stable** and isolated in the `{"role": "system"}` context.
+- All task-specific and dynamic data (like current code and logs) are strictly injected via the `{"role": "user"}` message.
+This ensures the prefix >= 1024 tokens remains an exact match across every execution loop, cutting input-token costs by up to 90%.
+
 ## Anti-Failure Rules
 - Reject circular reasoning, self-grading, and popularity arguments.
 - Never claim success without empirical support.

@@ -22,10 +22,12 @@ def write_file(filepath, content):
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
 
+# Load the stable system prompt once
+SYSTEM_PROMPT = read_file(".agents/system_prompt.txt")
+
 async def generate_proposals(plan_content, train_code):
     """Layer 2: Proposal Engine"""
-    prompt = f"""You are the Proposal Engine for an AI Research Scientist.
-Your goal is to decrease validation BPB in a 5-minute training budget.
+    user_prompt = f"""Your goal is to decrease validation BPB in a 5-minute training budget.
 Generate 3 mutually exclusive, diverse hypotheses (patches) for train.py.
 
 CURRENT RESEARCH PLAN:
@@ -49,7 +51,10 @@ Format your output as a JSON list of dictionaries:
   }}
 ]
 """
-    messages = [{"role": "user", "content": prompt}]
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt}
+    ]
     print("Generating proposals...")
     response = await query_model(PROPOSER_MODEL, messages, timeout=120.0)
     if not response or not response.get('content'):
@@ -132,7 +137,7 @@ def execute_experiment(patch):
 
 async def run_postmortem(experiment_results, patch):
     """Layer 6: Postmortem Council"""
-    prompt = f"""Perform a postmortem on this experiment.
+    user_prompt = f"""Perform a postmortem on this experiment.
     
 HYPOTHESIS:
 {patch['mechanism']}
@@ -149,7 +154,10 @@ Answer these questions:
 4. What evidence supports/contradicts?
 5. What should be attempted next?
 """
-    messages = [{"role": "user", "content": prompt}]
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt}
+    ]
     print("Running Postmortem...")
     response = await query_model(CHAIRMAN_MODEL, messages)
     return response['content'] if response else "Postmortem failed."
