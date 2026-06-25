@@ -1,0 +1,35 @@
+# Environment
+.env
+.venv/
+env/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Node
+node_modules/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data & Logs
+data/
+*.log
+results.tsv
+.cache/
+
+# IDEs
+.vscode/
+.idea/
+
+# Research State
+research_plan.md
+research_ledger.tsv
