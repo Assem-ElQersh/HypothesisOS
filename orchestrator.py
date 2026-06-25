@@ -7,7 +7,7 @@ from datetime import datetime
 import subprocess
 
 # Add llm-council to path so we can use its backend
-sys.path.append(os.path.join(os.path.dirname(__file__), "llm-council-master"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "llm-council"))
 from backend.openrouter import query_model, query_models_parallel
 from backend.council import stage2_collect_rankings, calculate_aggregate_rankings
 
@@ -97,7 +97,7 @@ def execute_experiment(patch):
     # NOTE: In a full implementation, we'd programmatically apply the patch to train.py here.
     # For now, we simulate execution.
     
-    cmd = "cd autoresearch-master && uv run train.py > run.log 2>&1"
+    cmd = "modal run modal_runner.py"
     start_time = time.time()
     
     try:
@@ -113,7 +113,7 @@ def execute_experiment(patch):
     mem_gb = 0.0
     log_content = ""
     try:
-        log_content = read_file("autoresearch-master/run.log")
+        log_content = read_file("autoresearch/run.log")
         for line in log_content.splitlines():
             if line.startswith("val_bpb:"):
                 val_bpb = float(line.split()[1])
@@ -163,7 +163,7 @@ async def main_loop():
     print("=== Starting HypothesisOS Orchestrator ===")
     
     plan_content = read_file("research_plan.md")
-    train_code = read_file("autoresearch-master/train.py")
+    train_code = read_file("autoresearch/train.py")
     
     # 1. Proposal
     proposals = await generate_proposals(plan_content, train_code)
