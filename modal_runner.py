@@ -22,24 +22,14 @@ autoresearch_image = (
         "pillow",
         "sympy"
     )
-    .add_local_file("autoresearch/prepare.py", "/app/prepare.py")
-    .run_commands(
-        "cd /app && python prepare.py"
-    )
-)
-
-# 2. Mount the local autoresearch directory so the latest train.py is synced instantly
-autoresearch_mount = modal.Mount.from_local_dir(
-    "autoresearch", 
-    remote_path="/app/autoresearch",
-    condition=lambda p: not p.endswith(".venv") and "__pycache__" not in p
+    # Add local directory instead of mounting as per current Modal best practices
+    .add_local_dir("autoresearch", remote_path="/app/autoresearch")
 )
 
 @app.function(
     image=autoresearch_image,
     gpu="H100",          # Provision exactly 1 H100
     timeout=600,         # 10 minute absolute timeout (train loop is 5 mins)
-    mounts=[autoresearch_mount]
 )
 def run_training_experiment():
     """Runs train.py on the Modal H100 and returns the log."""
@@ -52,14 +42,26 @@ def run_training_experiment():
             ["python", "train.py"], 
             capture_output=True, 
             text=True,
+            timeout=330,  # 5.5 min hard timeout inside the container
             check=False
         )
         log_content = result.stdout + "\n" + result.stderr
-        status = "SUCCESS" if result.returncode == 0 else "CRASH"
         
+        if result.returncode == 0:
+            status = "VALID"
+        else:
+            if "OutOfMemoryError" in log_content or "CUDA out of memory" in log_content:
+                status = "OOM"
+            else:
+                status = "FAILED"
+                
+    except subprocess.TimeoutExpired as e:
+        # The internal subprocess timed out
+        log_content = (e.stdout.decode() if e.stdout else "") + "\n" + (e.stderr.decode() if e.stderr else "") + "\nTIMEOUT EXPIRED"
+        status = "TIMEOUT"
     except Exception as e:
         log_content = str(e)
-        status = "CRASH"
+        status = "FAILED"
         
     return status, log_content
 
