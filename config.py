@@ -23,6 +23,10 @@ class Config:
         os.getenv("MODEL_3", "openrouter/free")
     ]
     
+    # Information gain & Novelty weights for Council EV calculation
+    LAMBDA_INFO = float(os.getenv("LAMBDA_INFO", "0.2"))
+    BETA_NOVELTY = float(os.getenv("BETA_NOVELTY", "0.1"))
+    
     # Execution & Hardware Settings
     EXECUTION_BACKEND = os.getenv("EXECUTION_BACKEND", "local") # "local" or "modal"
     TRAIN_TIME_BUDGET_SEC = int(os.getenv("TRAIN_TIME_BUDGET_SEC", "30")) # Fixed wall-clock compute budget per trial

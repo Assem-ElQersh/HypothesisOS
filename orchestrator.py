@@ -9,6 +9,8 @@ import asyncio
 import subprocess
 import shutil
 import argparse
+import hashlib
+import re
 from datetime import datetime
 
 # Path setup
@@ -30,6 +32,38 @@ def write_file(filepath, content):
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
 
+def clean_llm_text(text: str) -> str:
+    """ Strips LLM artifact tokens like <|tool_call_start|> or markdown system wrappers """
+    if not text:
+        return ""
+    text = re.sub(r"<\|.*?\|>", "", text)
+    return text.strip()
+
+def get_file_sha256(filepath: str) -> str:
+    if not os.path.exists(filepath):
+        return ""
+    hasher = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        hasher.update(f.read())
+    return hasher.hexdigest()
+
+INITIAL_EVALUATOR_HASH = get_file_sha256(config.EVALUATE_SCRIPT)
+
+def lock_evaluator_file(filepath: str):
+    """ Locks evaluate.py with read-only permissions (chmod 444) """
+    if os.path.exists(filepath):
+        try:
+            os.chmod(filepath, 0o444)
+        except Exception:
+            pass
+
+def verify_evaluator_integrity(filepath: str) -> bool:
+    current_hash = get_file_sha256(filepath)
+    if INITIAL_EVALUATOR_HASH and current_hash != INITIAL_EVALUATOR_HASH:
+        print(f"[SECURITY ALERT] Evaluator integrity check FAILED! File {filepath} was modified!")
+        return False
+    return True
+
 SYSTEM_PROMPT = read_file(".agents/system_prompt.txt")
 if not SYSTEM_PROMPT:
     SYSTEM_PROMPT = (
@@ -39,9 +73,14 @@ if not SYSTEM_PROMPT:
     )
 
 async def generate_proposals(plan_content: str, train_code: str, tree_state: dict) -> list:
-    """ Layer 2: Proposal Engine """
-    proven_wins = tree_state.get("proven_wins", [])
-    proven_failures = tree_state.get("proven_failures", [])
+    """ Layer 2: Proposal Engine with Memory Insights """
+    insights = tree_state.get("research_insights", {})
+    insights_str = (
+        f"PROVEN WINS ({len(insights.get('proven_wins', []))}):\n" +
+        ("\n".join(insights.get("proven_wins", [])) if insights.get("proven_wins") else "None yet.") + "\n\n" +
+        f"PROVEN FAILURES ({len(insights.get('proven_failures', []))}):\n" +
+        ("\n".join(insights.get("proven_failures", [])) if insights.get("proven_failures") else "None yet.")
+    )
 
     user_prompt = f"""You are the Proposal Engine for an autonomous ML research scientist.
 Goal: Decrease validation BPB (bits per byte) on a PyTorch Transformer language model.
@@ -49,9 +88,8 @@ Goal: Decrease validation BPB (bits per byte) on a PyTorch Transformer language 
 CURRENT RESEARCH STATE:
 {plan_content}
 
-PROVEN WINS (DO NOT REPEAT KNOWN FAILURES):
-- Wins: {proven_wins}
-- Failures: {proven_failures}
+SYNTHESIZED RESEARCH INSIGHTS (DO NOT REPEAT KNOWN FAILURES):
+{insights_str}
 
 CURRENT TRAIN.PY CODE:
 ```python
@@ -92,9 +130,13 @@ Format your output STRICTLY as a JSON list of dictionaries with this exact schem
     else:
         json_str = content.strip()
 
-    proposals = json.loads(json_str)
-    assert isinstance(proposals, list) and len(proposals) > 0, "Must generate a non-empty proposal list"
-    return proposals
+    try:
+        proposals = json.loads(json_str)
+        assert isinstance(proposals, list) and len(proposals) > 0, "Must generate a non-empty proposal list"
+        return proposals
+    except Exception as e:
+        print(f"[Proposal Error] JSON parsing failed: {e}")
+        return []
 
 def validate_patch_security(patch: dict) -> bool:
     """
@@ -133,7 +175,6 @@ def validate_patch_ast_syntax(filepath: str) -> bool:
 def apply_patch_to_code(train_code: str, patch: dict) -> tuple[bool, str]:
     """ Apply diff or replacement block to train.py """
     patch_str = patch.get("code_changes", "")
-    
     lines = train_code.splitlines(keepends=True)
 
     if "@@" in patch_str:
@@ -173,10 +214,13 @@ def apply_patch_to_code(train_code: str, patch: dict) -> tuple[bool, str]:
 
 def execute_experiment(patch: dict, backend: str = config.EXECUTION_BACKEND) -> dict:
     """
-    Layer 5: Isolated Execution Layer.
+    Layer 5: Isolated Execution Layer with Cryptographic Integrity Verification.
     Dispatches to local Python process or Modal container.
-    Returns status, val_bpb, val_loss, peak_vram_mb, runtime.
     """
+    # 0. Evaluator Cryptographic Integrity Verification
+    if not verify_evaluator_integrity(config.EVALUATE_SCRIPT):
+        return {"status": "SECURITY_VIOLATION", "val_bpb": None, "val_loss": None, "runtime": 0, "log": "Evaluator file tampering detected!"}
+
     train_path = config.TRAIN_SCRIPT
     backup_path = train_path + ".bak"
 
@@ -211,13 +255,33 @@ def execute_experiment(patch: dict, backend: str = config.EXECUTION_BACKEND) -> 
                 text=True,
                 timeout=config.EXECUTION_TIMEOUT_SEC + 60
             )
-            log = modal_res.stdout + "\n" + modal_res.stderr
+            log_output = modal_res.stdout + "\n" + modal_res.stderr
             if modal_res.returncode != 0:
                 shutil.copy2(backup_path, train_path)
-                return {"status": "MODAL_ERROR", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": log}
+                return {"status": "MODAL_ERROR", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": log_output}
+            
+            # Parse structured JSON output from Modal runner
+            if "---MODAL_OUTPUT_JSON_START---" in modal_res.stdout:
+                json_part = modal_res.stdout.split("---MODAL_OUTPUT_JSON_START---")[1].split("---MODAL_OUTPUT_JSON_END---")[0].strip()
+                eval_data = json.loads(json_part)
+                runtime = time.time() - start_time
+                return {
+                    "status": eval_data.get("status", "VALID"),
+                    "val_bpb": eval_data.get("val_bpb"),
+                    "val_loss": eval_data.get("val_loss"),
+                    "peak_vram_mb": eval_data.get("peak_vram_mb", 0.0),
+                    "runtime": round(runtime, 2),
+                    "log": eval_data.get("full_log", log_output),
+                    "backup_path": backup_path
+                }
+            else:
+                shutil.copy2(backup_path, train_path)
+                return {"status": "MODAL_ERROR", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": log_output}
+
         except Exception as e:
             shutil.copy2(backup_path, train_path)
             return {"status": "MODAL_ERROR", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": str(e)}
+
     else:
         print(f"[Execution] Running local PyTorch training script ({config.TRAIN_SCRIPT})...")
         try:
@@ -238,7 +302,7 @@ def execute_experiment(patch: dict, backend: str = config.EXECUTION_BACKEND) -> 
             shutil.copy2(backup_path, train_path)
             return {"status": "TIMEOUT", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": "Timeout expired"}
 
-    # 5. Run Immutable Ground-Truth Evaluator
+    # 5. Run Immutable Ground-Truth Evaluator (Local mode)
     print(f"[Execution] Running Immutable Ground-Truth Evaluator ({config.EVALUATE_SCRIPT})...")
     try:
         eval_res = subprocess.run(
@@ -303,7 +367,9 @@ Answer:
     response = await query_model(config.CHAIRMAN_MODEL, messages)
     if not response or response.get("status") != "SUCCESS":
         return f"Postmortem complete for {patch['id']} (Status: {status})."
-    return response.get('content', 'Postmortem complete.')
+    
+    raw_content = response.get('content', 'Postmortem complete.')
+    return clean_llm_text(raw_content)
 
 def log_to_ledger(patch: dict, results: dict, baseline_bpb: float):
     """ Record experiment into research_ledger.tsv """
@@ -333,6 +399,7 @@ async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIM
     print("=========================================================")
     print(f"Backend Execution Mode: {backend}")
     
+    lock_evaluator_file(config.EVALUATE_SCRIPT)
     tree = ResearchTree()
     
     # Run initial baseline training & evaluation if needed
@@ -345,9 +412,7 @@ async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIM
         eval_res = subprocess.run([sys.executable, config.EVALUATE_SCRIPT], capture_output=True, text=True)
         try:
             data = json.loads(eval_res.stdout.strip().splitlines()[-1])
-            tree.data["current_best"]["val_bpb"] = data["val_bpb"]
-            tree.data["current_best"]["val_loss"] = data["val_loss"]
-            tree.save()
+            tree.set_baseline(data["val_bpb"], data["val_loss"])
             print(f"[Setup] Ground-truth baseline established: {data['val_bpb']} BPB (Val Loss: {data['val_loss']})")
         except Exception as e:
             print(f"[Setup Error] Initial baseline evaluation failed: {e}\nOutput was: {eval_res.stdout}")
@@ -359,11 +424,19 @@ async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIM
         exp_counter += 1
         print(f"\n--- [AUTONOMOUS ITERATION {exp_counter}/{max_experiments}] ---")
 
-        baseline_bpb = tree.data["current_best"]["val_bpb"]
-        print(f"Current Best Baseline: {baseline_bpb} BPB (Active Node: {tree.data['current_best']['hypothesis_id']})")
+        # Tree Search: Select parent expansion node using UCB1
+        active_node_id = tree.select_expansion_node()
+        active_node = tree.data["nodes"].get(active_node_id, {})
+        baseline_bpb = active_node.get("val_bpb")
+        if baseline_bpb is None:
+            baseline_bpb = tree.data["current_best"]["val_bpb"]
+
+        print(f"Selected Expansion Node: '{active_node_id}' (Baseline: {baseline_bpb} BPB)")
 
         plan_content = read_file(config.RESEARCH_PLAN_PATH)
         train_code = read_file(config.TRAIN_SCRIPT)
+
+        tree.data["research_insights"] = tree.get_research_insights()
 
         # 1. Proposal Generation (Layer 2)
         proposals = await generate_proposals(plan_content, train_code, tree.data)
@@ -378,13 +451,13 @@ async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIM
             break
 
         best_hypothesis = evaluated_proposals[0]
+        best_hypothesis["parent_id"] = active_node_id
 
         print(f"[Experiment Selection] Selected Hypothesis: {best_hypothesis['id']}")
         print(f"  Mechanism: {best_hypothesis['mechanism']}")
         print(f"  Utility EV Score: {best_hypothesis['utility_ev']}")
 
-        node_id = tree.add_experiment_node(best_hypothesis)
-        best_hypothesis["parent_id"] = tree.data["active_node_id"]
+        node_id = tree.add_experiment_node(best_hypothesis, parent_id=active_node_id)
 
         # 3. Execution (Layer 5)
         results = execute_experiment(best_hypothesis, backend=backend)

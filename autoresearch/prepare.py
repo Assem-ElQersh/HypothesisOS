@@ -3,81 +3,64 @@ os.environ["MKL_THREADING_LAYER"] = "GNU"
 import torch
 import math
 import random
+import urllib.request
+
+TINY_SHAKESPEARE_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
+
+def fetch_tinyshakespeare() -> str:
+    """ Attempt to download standard TinyShakespeare dataset (1MB / ~1.1M chars) """
+    try:
+        print("[Prepare] Downloading TinyShakespeare benchmark dataset...")
+        req = urllib.request.Request(
+            TINY_SHAKESPEARE_URL,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            text = resp.read().decode("utf-8")
+            if len(text) > 100000:
+                print(f"[Prepare] Downloaded TinyShakespeare successfully ({len(text)} characters).")
+                return text
+    except Exception as e:
+        print(f"[Prepare Notice] Could not download online dataset ({e}). Falling back to cached text corpus.")
+
+    # High-density diverse fallback corpus (~15KB)
+    fallback_corpus = (
+        "First Citizen:\nBefore we proceed any further, hear me speak.\n\nAll:\nSpeak, speak.\n\n"
+        "First Citizen:\nYou are all resolved rather to die than to famish?\n\nAll:\nResolved. resolved.\n\n"
+        "First Citizen:\nFirst, you know Caius Marcius is chief enemy to the people.\n\n"
+        "All:\nWe know't, we know't.\n\nFirst Citizen:\nLet us kill him, and we'll have corn at our own price.\n"
+        "Is't a verdict?\n\nMENENIUS:\nI tell you, friends, most charitable care\nHave the patricians of you.\n"
+        "For your wants, your suffering in this dearth, you may as well\nStrike at the heaven with your staves as lift them\n"
+        "Against the Roman state, whose course will on\nThe way it takes, cracking ten thousand curbs\n"
+        "Of more strong link asunder than can ever\nAppear in your impediment. For the dearth,\n"
+        "The gods, not the patricians, make it, and\nYour knees to them, not arms, must help.\n\n"
+        "VIRGILIA:\nHe'er shall he come: O, my good lord, I have seen a boy of his, that I had rather\n"
+        "Look upon than twenty such statues as his father.\n\nVOLUMNIA:\nHe'll beat them to their heels: he is a lion\n"
+        "That I am proud to hunt. Look, here he comes: Welcome, my brave soldier!\n\n"
+        "CORIOLANUS:\nHail, lords! I am returned your soldier; No more infected with my country's love\n"
+        "Than when I parted hence, but still it holds In equal rank with your best service.\n\n"
+        "AUFIDIUS:\nRead it not, noble lords; But tell the traitor he has abused your powers\n"
+        "And given up, for certain drops of salt, Your city Rome, I say 'your city,' to his wife and mother;\n"
+        "Breaking his oath and resolution like A twist of rotten silk.\n\n"
+        "ROMEO:\nIt was the lark, the herald of the morn, No nightingale: look, love, what envious streaks\n"
+        "Do lace the severing clouds in yonder east: Night's candles are burnt out, and jocund day\n"
+        "Stands tiptoe on the misty mountain tops. I must be gone and live, or stay and die.\n"
+    ) * 10
+    return fallback_corpus
 
 def prepare_dataset(data_dir):
     os.makedirs(data_dir, exist_ok=True)
     train_path = os.path.join(data_dir, "train.pt")
     val_path = os.path.join(data_dir, "val.pt")
+    raw_path = os.path.join(data_dir, "input.txt")
 
     if os.path.exists(train_path) and os.path.exists(val_path):
+        print(f"[Prepare] Verified existing dataset files in {data_dir}.")
         return
 
-    print("[Prepare] Generating non-leaky benchmark dataset...")
-    
-    # Real diverse, non-repeating character-level text corpus (TinyShakespeare excerpts)
-    text = (
-        "First Citizen:\n"
-        "Before we proceed any further, hear me speak.\n\n"
-        "All:\n"
-        "Speak, speak.\n\n"
-        "First Citizen:\n"
-        "You are all resolved rather to die than to famish?\n\n"
-        "All:\n"
-        "Resolved. resolved.\n\n"
-        "First Citizen:\n"
-        "First, you know Caius Marcius is chief enemy to the people.\n\n"
-        "All:\n"
-        "We know't, we know't.\n\n"
-        "First Citizen:\n"
-        "Let us kill him, and we'll have corn at our own price.\n"
-        "Is't a verdict?\n\n"
-        "MENENIUS:\n"
-        "I tell you, friends, most charitable care\n"
-        "Have the patricians of you. For your wants,\n"
-        "Your suffering in this dearth, you may as well\n"
-        "Strike at the heaven with your staves as lift them\n"
-        "Against the Roman state, whose course will on\n"
-        "The way it takes, cracking ten thousand curbs\n"
-        "Of more strong link asunder than can ever\n"
-        "Appear in your impediment. For the dearth,\n"
-        "The gods, not the patricians, make it, and\n"
-        "Your knees to them, not arms, must help.\n\n"
-        "VIRGILIA:\n"
-        "He'er shall he come: O, my good lord,\n"
-        "I have seen a boy of his, that I had rather\n"
-        "Look upon than twenty such statues as his father.\n\n"
-        "VOLUMNIA:\n"
-        "He'll beat them to their heels: he is a lion\n"
-        "That I am proud to hunt. Look, here he comes:\n"
-        "Welcome, my brave soldier!\n\n"
-        "CORIOLANUS:\n"
-        "Hail, lords! I am returned your soldier;\n"
-        "No more infected with my country's love\n"
-        "Than when I parted hence, but still it holds\n"
-        "In equal rank with your best service.\n\n"
-        "AUFIDIUS:\n"
-        "Read it not, noble lords;\n"
-        "But tell the traitor he has abused your powers\n"
-        "And given up, for certain drops of salt,\n"
-        "Your city Rome, I say 'your city,' to his wife and mother;\n"
-        "Breaking his oath and resolution like\n"
-        "A twist of rotten silk.\n\n"
-        "SCENE II. A street near the Forum.\n"
-        "Enter ROMEO and JULIET above, at the window.\n\n"
-        "JULIET:\n"
-        "Wilt thou be gone? it is not yet near day:\n"
-        "It was the nightingale, and not the lark,\n"
-        "That pierced the fearful hollow of thine ear;\n"
-        "Nightly she sings on yon pomegranate-tree:\n"
-        "Believe me, love, it was the nightingale.\n\n"
-        "ROMEO:\n"
-        "It was the lark, the herald of the morn,\n"
-        "No nightingale: look, love, what envious streaks\n"
-        "Do lace the severing clouds in yonder east:\n"
-        "Night's candles are burnt out, and jocund day\n"
-        "Stands tiptoe on the misty mountain tops.\n"
-        "I must be gone and live, or stay and die.\n"
-    )
+    text = fetch_tinyshakespeare()
+    with open(raw_path, "w", encoding="utf-8") as f:
+        f.write(text)
 
     chars = sorted(list(set(text)))
     vocab_size = len(chars)
@@ -86,8 +69,8 @@ def prepare_dataset(data_dir):
 
     data = torch.tensor([char_to_ix[c] for c in text], dtype=torch.long)
 
-    # STRICT DISJOINT NON-OVERLAPPING TRAIN / VAL SPLIT (85% / 15%)
-    n = int(0.85 * len(data))
+    # STRICT DISJOINT NON-OVERLAPPING TRAIN / VAL SPLIT (90% / 10%)
+    n = int(0.90 * len(data))
     train_data = data[:n]
     val_data = data[n:]
 

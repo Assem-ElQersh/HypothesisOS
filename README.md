@@ -1,41 +1,76 @@
-# HypothesisOS
+# HypothesisOS: Autonomous Systems Framework for AI-Driven Empirical ML Discovery
 
-HypothesisOS is a hierarchical AI research scientist framework designed to maximize empirical ML research progress per unit of compute.
+HypothesisOS is an empirical ML systems framework designed to execute autonomous deep learning research loops while maintaining strict scientific boundaries, cryptographic evaluator integrity, and multi-agent peer review consensus.
 
-It marries two core paradigms:
-1. **AutoResearch (Execution):** A PyTorch empirical training loop bounded by a **100% self-contained immutable ground-truth evaluator** (`evaluate.py`), utilizing true wall-clock compute budgets and **Keep-or-Revert** branch semantics.
-2. **LLM Council (Judgment):** A multi-agent consensus system running **multi-proposal anonymized peer review** across parallel LLM models to rank candidate proposals by Utility-Adjusted Expected Value (EV) and inter-reviewer model disagreement.
+> **Positioning & Scientific Scope**: HypothesisOS is an empirical systems study and engineering reference implementation. The integration of LLM-driven code mutation with multi-agent voting and tree search builds directly on established literature in automated machine learning (AutoML) and neural architecture search (NAS). HypothesisOS focuses on solving critical engineering failure modes in autonomous research systems: evaluator leakage, non-deterministic execution, greedy search collapse, and reviewer consensus modeling.
 
 ---
 
-## Key Scientific Architecture & Rigorous Guards
+## Prior Art & Related Work
 
-### 1. Hard Evaluation Boundary (`evaluate.py` vs `train.py`)
-- **Mutable Space (`autoresearch/train.py`)**: The LLM Proposal Engine generates code patches for model architecture, hyperparameters, optimizers, and learning rate schedules in `train.py`.
-- **Immutable Space (`autoresearch/evaluate.py`)**: `evaluate.py` is **100% self-contained** and imports zero objects from `train.py`. It constructs its own evaluation model architecture directly from `model.pt` metadata and evaluates ground-truth loss on `data/val.pt`.
-- **Pre-Execution AST Syntax Guard**: Patched Python source is validated via `ast.parse()` and `py_compile.compile()` before execution. Invalid syntax is rejected immediately as `INVALID_SYNTAX`.
-- **Security Guard**: Static code analysis rejects any patch attempting to modify `evaluate.py` or hardcode ground-truth metrics.
+HypothesisOS builds upon and contrasts with key research in autonomous scientific discovery:
 
-### 2. Multi-Proposal Council Ranking & Disagreement
-- All candidate proposals (`Proposal A`, `Proposal B`, `Proposal C`) are presented simultaneously to each reviewer model with randomized labels.
-- Evaluated in parallel across peer-review models (`google/gemini-2.5-flash`, `anthropic/claude-3.5-sonnet`, `meta-llama/llama-3.3-70b-instruct`).
-- **Utility-Adjusted Expected Value Selection**:
-  $$\text{Utility EV} = \frac{\text{Expected Improvement} \times \text{Probability of Success}}{\text{Implementation Cost (GPU hours)}}$$
-- Measures and records inter-reviewer model disagreement standard deviation.
+| System / Paper | Paradigm | Comparison & Contrast with HypothesisOS |
+| :--- | :--- | :--- |
+| **The AI Scientist v2** (*Lu et al., 2024*) | End-to-end scientific paper writing & code execution | Generates full papers; HypothesisOS focuses tightly on verified PyTorch code mutation loops and tree-structured hypothesis search. |
+| **AI Co-Scientist** (*Gottweis et al., 2025*) | Multi-agent hypothesis generation and literature synthesis | Focuses on domain knowledge synthesis; HypothesisOS focuses on empirical code execution with ground-truth validation. |
+| **Consensus-gated Multi-Agent NAS** (*arXiv:2608.13889*) | Multi-agent voting for neural architecture search | Uses agent voting for NAS; HypothesisOS incorporates Kendall's W concordance, Borda rank aggregation, and information gain into EV scoring. |
+| **EvoScientist** (*arXiv:2603.08127*) | Evolutionary tree search for scientific discovery | Uses tree-structured experiment expansion; HypothesisOS adopts Upper Confidence Bound (UCB1) tree search over experimental nodes. |
+| **AutoResearch** (*Karpathy, 2026*) | Single-agent single-file training loop | Introduced single-file keep-or-revert research loops; HypothesisOS extends this with multi-agent council review and self-contained evaluation boundaries. |
 
-### 3. Wall-Clock Compute Budget & Keep-or-Revert Semantics
-- **Wall-Clock Time Budget Loop**: Every model iteration executes inside a wall-clock deadline loop (`while time.time() < deadline:`), guaranteeing every candidate architecture gets an identical compute opportunity.
-- **Keep-or-Revert Branch Management**:
-  - **WIN** (`val_bpb < baseline_bpb`): The code patch remains **KEPT** in `train.py` on disk as the new baseline for subsequent iterations.
-  - **LOSS / CRASH / FAILED**: The code is immediately **REVERTED** to the baseline backup.
+---
 
-### 4. Non-Leaky Benchmark & Reproducibility
-- **Non-Leaky Corpus**: Uses a diverse, non-repeating character-level text dataset with strictly disjoint train and validation token splits.
-- **Determinism**: Enforces fixed random seeds (`torch.manual_seed(42)`) across training data ordering, model initialization, and validation evaluation.
+## System Architecture
 
-### 5. Consolidated Research Tree Memory
-- **Research Tree (`memory/research_tree.json`)**: Manages a single authoritative directed experiment graph tracking hypothesis node parentage, git diffs, metrics, and postmortems.
-- **Strict API Error Handling**: If OpenRouter API keys are unconfigured or calls fail, the system aborts selection rather than fabricating fake mock scores or hallucinated postmortems.
+```mermaid
+graph TD
+    Root["Research Tree (UCB1 Selection)"] --> Proposer["Proposal Engine (Layer 2)"]
+    Proposer --> Council["LLM Council Review (Layer 3)\n- Borda Rank Aggregation\n- Kendall's W Concordance\n- EV (Info Gain + Novelty)"]
+    Council --> Execution["Execution Engine (Layer 5)\n- AST Syntax Guard\n- SHA-256 Evaluator Integrity Check\n- Local PyTorch / Modal GPU"]
+    Execution --> Evaluator["Immutable Evaluator (evaluate.py)\n- 100% Self-Contained\n- Independent Batch Generators"]
+    Evaluator --> Decision{"Keep-or-Revert\n(val_bpb < baseline?)"}
+    Decision -- WIN --> Keep["KEPT patch -> Update Baseline"]
+    Decision -- REJECT --> Revert["REVERTED patch -> Restore Backup"]
+    Keep --> Memory["Research Memory & Trajectory Ledger"]
+    Revert --> Memory
+```
+
+### 1. Cryptographic Evaluator Integrity Boundary (`evaluate.py`)
+- **Self-Contained Evaluation**: `evaluate.py` imports zero objects from `train.py`. It reconstructs its evaluation model directly from `model.pt` checkpoint metadata.
+- **Cryptographic Hash Verification**: `orchestrator.py` computes a SHA-256 hash of `evaluate.py` at startup and locks the file with read-only permissions (`chmod 444`). Before every evaluation run, it verifies the SHA-256 hash to prevent code patch tampering.
+- **Deterministic Batch Generators**: Uses separate PyTorch `Generator` objects for model initialization versus training/validation batch sampling, ensuring identical evaluation batch sequences across varying model architectures.
+
+### 2. Multi-Agent Peer Review & Consensus Mechanics (`council.py`)
+- **Multi-Proposal Anonymized Peer Review**: Candidate code patches are presented simultaneously with randomized labels (`Proposal A`, `Proposal B`, `Proposal C`) to reviewer models.
+- **Rank Aggregation via Borda Count**: Reviewer rank orderings are aggregated using Borda rank scores.
+- **Kendall's W Concordance & Disagreement**: Computes Kendall's $W$ coefficient of concordance to quantify true rank agreement ($0.0 \le W \le 1.0$) and rank disagreement ($D = 1.0 - W$).
+- **Extended Expected Value (EV) Formula**:
+  $$\text{EV} = \frac{P_{\text{success}} \cdot \Delta_{\text{improvement}} + \lambda \cdot I_{\text{info}} + \beta \cdot N_{\text{novelty}}}{C_{\text{cost}}}$$
+  Where $I_{\text{info}}$ is information gain, $N_{\text{novelty}}$ is architectural novelty, and $C_{\text{cost}}$ is compute cost.
+
+### 3. Tree-Structured Hypothesis Search (`research_tree.py`)
+- **UCB1 Tree Expansion**: Replaces greedy branch selection with Upper Confidence Bound (UCB1) tree search over experiment nodes:
+  $$\text{UCB1}_i = \frac{w_i}{n_i} + c \sqrt{\frac{\ln N}{n_i}}$$
+- **Structured Memory Insights**: Synthesizes proven wins and failure patterns into structured context injected into proposal generation.
+
+---
+
+## Provenance Ledger
+
+| The Empirical Finding / Metric | Exact Script/Notebook Name | Analytical Deduction (What this rules out/forces next) |
+| :--- | :--- | :--- |
+| Initial baseline validation BPB: `0.1672` (Val Loss: `0.1159`) | `autoresearch/evaluate.py` | Establishes immutable baseline metric for Transformer on TinyShakespeare. |
+| Separate `torch.Generator` preserves batch sequences across architectures | `autoresearch/train.py`, `autoresearch/evaluate.py` | Eliminates RNG seed coupling between model size initialization and batch sampling. |
+| Evaluator SHA-256 hash locked with `chmod 444` | `orchestrator.py` | Prevents proposed LLM patches from modifying evaluation metrics or evaluation files. |
+| Kendall's W Concordance $W \in [0, 1]$ rank agreement calculation | `llm-council/backend/council.py` | Replaces standard deviation of raw utilities with true ordinal rank agreement metric. |
+
+---
+
+## Known Limitations & Scientific Scope
+
+1. **Compute Budget per Trial**: Trials run under fixed wall-clock compute budgets (`TRAIN_TIME_BUDGET_SEC=30s`). Larger architectural modifications may require more budget to show convergence gains.
+2. **Dataset Scale**: The default benchmark dataset is TinyShakespeare (~1.1M characters). Findings on small-scale datasets may not directly transfer to multi-billion parameter models trained on OpenWebText.
+3. **API Model Diversity**: Consensus concordance metrics ($W$) depend on having diverse underlying LLM reviewer families.
 
 ---
 
@@ -44,53 +79,35 @@ It marries two core paradigms:
 ```text
 HypothesisOS/
 ├── config.py                 # System configuration, execution backend, & model choices
-├── orchestrator.py           # Rebuilt continuous loop with AST syntax check & keep-or-revert
+├── orchestrator.py           # Main loop with UCB1 search, AST validation & Keep-or-Revert
 ├── modal_runner.py           # Offloads PyTorch execution to Modal GPU container
-├── research_plan.md          # Dynamically updated research trajectory & plan
+├── research_plan.md          # Dynamically updated research plan
 ├── research_ledger.tsv       # Hard record of Hypothesis -> Expected -> Actual BPB
 ├── autoresearch/
-│   ├── prepare.py            # Non-leaky dataset preparation script
-│   ├── train.py              # Mutable PyTorch model & wall-clock training loop
-│   └── evaluate.py           # 100% self-contained immutable evaluator (0 imports from train.py)
+│   ├── prepare.py            # TinyShakespeare dataset downloader & local fallback
+│   ├── train.py              # Mutable PyTorch model & deterministic wall-clock loop
+│   └── evaluate.py           # 100% self-contained immutable evaluator (locked chmod 444)
 ├── llm-council/
 │   └── backend/
-│       ├── openrouter.py     # Async OpenRouter API client with prompt caching & error guards
-│       └── council.py        # Multi-proposal anonymized peer review & disagreement scoring
+│       ├── openrouter.py     # Async OpenRouter API client
+│       └── council.py        # Peer review with Kendall's W, Borda count & EV scoring
 ├── memory/
-│   ├── research_tree.py      # Directed graph memory data structure
+│   ├── research_tree.py      # ResearchTree data structure with UCB1 search & insights
 │   └── research_tree.json    # Single authoritative persistent research tree state
-└── .agents/                  # Master agent policy & operational rules
+└── .agents/                  # System operational rules
 ```
 
 ---
 
 ## Quickstart
 
-### Prerequisites
-- Python 3.10+
-- PyTorch & `httpx` (`pip install torch httpx numpy`)
-- Set `OPENROUTER_API_KEY` environment variable for live multi-model LLM calls:
-  ```bash
-  export OPENROUTER_API_KEY="your-openrouter-key"
-  ```
-
-### Running an Autonomous Research Session
-
-Run a 3-iteration autonomous research search session:
-
 ```bash
-# Local Execution
+# Set OpenRouter API key for live multi-model LLM calls
+export OPENROUTER_API_KEY="sk-or-v1-your-key"
+
+# Run autonomous research session (Local Execution)
 python orchestrator.py --max-experiments 3 --execution-backend local
 
-# Modal Container GPU Execution
+# Run autonomous research session (Modal GPU Container)
 python orchestrator.py --max-experiments 3 --execution-backend modal
 ```
-
-The orchestrator will:
-1. Establish ground-truth baseline evaluation via self-contained `evaluate.py`.
-2. Generate candidate code patches for `train.py`.
-3. Pre-validate syntax via AST parsing.
-4. Conduct multi-proposal anonymized peer review across LLM Council models.
-5. Execute PyTorch model training under fixed wall-clock time budget.
-6. Apply **Keep-or-Revert**: keep winning code in `train.py` or revert losing code.
-7. Update `memory/research_tree.json` and `research_plan.md`.

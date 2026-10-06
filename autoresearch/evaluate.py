@@ -14,6 +14,10 @@ from torch.nn import functional as F
 SEED = 42
 torch.manual_seed(SEED)
 
+# Independent RNG Generator for Evaluation Batch Sampling
+EVAL_RNG = torch.Generator(device='cpu')
+EVAL_RNG.manual_seed(4242)
+
 class Head(nn.Module):
     def __init__(self, n_embd, head_size, block_size, dropout):
         super().__init__()
@@ -105,7 +109,7 @@ class ImmutableLanguageModel(nn.Module):
         return logits, loss
 
 def get_immutable_batch(data, block_size, batch_size, device):
-    ix = torch.randint(len(data) - block_size, (batch_size,))
+    ix = torch.randint(len(data) - block_size, (batch_size,), generator=EVAL_RNG)
     x = torch.stack([data[i:i+block_size] for i in ix])
     y = torch.stack([data[i+1:i+block_size+1] for i in ix])
     return x.to(device), y.to(device)

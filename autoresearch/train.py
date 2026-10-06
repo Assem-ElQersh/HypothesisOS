@@ -13,6 +13,10 @@ SEED = 42
 torch.manual_seed(SEED)
 random.seed(SEED)
 
+# Independent RNG Generator for Batch Sampling to preserve batch sequence across architectures
+BATCH_RNG = torch.Generator(device='cpu')
+BATCH_RNG.manual_seed(1337)
+
 # --- Hyperparameters & Model Configuration ---
 # LLM Proposal Engine can modify hyperparameters or architecture below.
 batch_size = 16
@@ -118,7 +122,7 @@ class LanguageModel(nn.Module):
         return logits, loss
 
 def get_batch(data, block_size, batch_size):
-    ix = torch.randint(len(data) - block_size, (batch_size,))
+    ix = torch.randint(len(data) - block_size, (batch_size,), generator=BATCH_RNG)
     x = torch.stack([data[i:i+block_size] for i in ix])
     y = torch.stack([data[i+1:i+block_size+1] for i in ix])
     return x.to(device), y.to(device)

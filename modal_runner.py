@@ -39,19 +39,28 @@ def run_training_experiment():
     print("[Modal Container] Running Immutable Evaluator...")
     eval_res = subprocess.run(["python", "evaluate.py"], capture_output=True, text=True, check=False)
     eval_log = eval_res.stdout
-
     full_log = train_log + "\n--- IMMUTABLE EVALUATION OUTPUT ---\n" + eval_log
-    status = "VALID" if eval_res.returncode == 0 else "FAILED"
 
-    return status, full_log
+    if eval_res.returncode == 0:
+        try:
+            eval_data = json.loads(eval_log.strip().splitlines()[-1])
+            eval_data["full_log"] = full_log
+            return eval_data
+        except Exception:
+            return {"status": "METRIC_MISSING", "val_bpb": None, "val_loss": None, "full_log": full_log}
+    else:
+        return {"status": "FAILED", "val_bpb": None, "val_loss": None, "full_log": full_log}
 
 @app.local_entrypoint()
 def main():
     print("[Modal Dispatcher] Offloading PyTorch training run to Modal...")
-    status, log_content = run_training_experiment.remote()
-
-    print(f"[Modal Dispatcher] Container execution finished with status: {status}")
+    res = run_training_experiment.remote()
+    print(f"[Modal Dispatcher] Container execution finished with status: {res.get('status')}")
+    print("---MODAL_OUTPUT_JSON_START---")
+    print(json.dumps(res))
+    print("---MODAL_OUTPUT_JSON_END---")
     with open("autoresearch/run.log", "w", encoding="utf-8") as f:
-        f.write(log_content)
+        f.write(res.get("full_log", ""))
 
     print("Log saved to autoresearch/run.log.")
+

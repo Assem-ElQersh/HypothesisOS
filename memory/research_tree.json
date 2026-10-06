@@ -1,9 +1,9 @@
 {
   "objective": "Minimize validation BPB (bits per byte) on PyTorch language model architecture.",
   "current_best": {
-    "val_bpb": 0.1672,
-    "val_loss": 0.1159,
-    "hypothesis_id": "baseline"
+    "val_bpb": 0.1618,
+    "val_loss": 0.1121,
+    "hypothesis_id": "root"
   },
   "root_id": "root",
   "nodes": {
@@ -11,11 +11,14 @@
       "node_id": "root",
       "parent_id": null,
       "mechanism": "Initial PyTorch Baseline Model",
-      "val_bpb": null,
+      "val_bpb": 0.1618,
       "status": "VALID",
       "children": [
         "HYP-101"
-      ]
+      ],
+      "val_loss": 0.1121,
+      "visits": 1,
+      "wins": 1
     },
     "HYP-101": {
       "node_id": "HYP-101",
