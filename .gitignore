@@ -37,3 +37,6 @@ results.tsv
 # Research State
 research_plan.md
 research_ledger.tsv
+
+# Agent Configuration
+.agents/
