@@ -6,18 +6,20 @@ class Config:
     OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     
     # Model selections (decoupled from orchestrator logic)
-    PROPOSER_MODEL = os.getenv("PROPOSER_MODEL", "google/gemini-2.5-pro")
-    CHAIRMAN_MODEL = os.getenv("CHAIRMAN_MODEL", "google/gemini-2.5-pro")
+    PROPOSER_MODEL = os.getenv("PROPOSER_MODEL", "google/gemini-2.5-flash")
+    CHAIRMAN_MODEL = os.getenv("CHAIRMAN_MODEL", "anthropic/claude-3.5-sonnet")
     COUNCIL_MODELS = [
-        "google/gemini-2.5-pro",
+        "google/gemini-2.5-flash",
         "anthropic/claude-3.5-sonnet",
         "meta-llama/llama-3.3-70b-instruct"
     ]
     
     # Execution & Hardware Settings
-    TRAIN_TIME_BUDGET_SEC = 60         # Default time budget per training trial (in seconds)
-    EXECUTION_TIMEOUT_SEC = 120        # Hard timeout for training process
-    DEFAULT_MAX_EXPERIMENTS = 5        # Number of loop iterations for autonomous run
+    EXECUTION_BACKEND = os.getenv("EXECUTION_BACKEND", "local") # "local" or "modal"
+    TRAIN_TIME_BUDGET_SEC = int(os.getenv("TRAIN_TIME_BUDGET_SEC", "30")) # Fixed wall-clock compute budget per trial
+    EXECUTION_TIMEOUT_SEC = int(os.getenv("EXECUTION_TIMEOUT_SEC", "60")) # Hard process timeout limit
+    DEFAULT_MAX_EXPERIMENTS = int(os.getenv("DEFAULT_MAX_EXPERIMENTS", "3"))
+    RANDOM_SEED = int(os.getenv("RANDOM_SEED", "42")) # Global seed for determinism
     
     # Project paths
     WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))

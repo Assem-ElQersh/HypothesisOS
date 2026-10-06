@@ -1,7 +1,10 @@
 import os
+os.environ["MKL_THREADING_LAYER"] = "GNU"
 import sys
 import time
 import json
+import ast
+import py_compile
 import asyncio
 import subprocess
 import shutil
@@ -66,7 +69,7 @@ Format your output STRICTLY as a JSON list of dictionaries with this exact schem
     "id": "HYP-101",
     "mechanism": "Increase transformer layers from 2 to 4 to improve representation capacity",
     "risk": "Medium",
-    "code_changes": "@@ -17,1 +17,1 @@\\n-n_layer = 2\\n+n_layer = 4"
+    "code_changes": "@@ -17,1 +17,1 me\\n-n_layer = 2\\n+n_layer = 4"
   }}
 ]
 """
@@ -78,8 +81,10 @@ Format your output STRICTLY as a JSON list of dictionaries with this exact schem
     print("[Proposal Engine] Generating 3 candidate hypotheses...")
     response = await query_model(config.PROPOSER_MODEL, messages, timeout=120.0)
     
-    if not response or not response.get('content'):
-        raise Exception("Failed to generate proposals from LLM.")
+    if not response or response.get("status") != "SUCCESS" or not response.get("content"):
+        err = response.get("error", "API Call Failed")
+        print(f"[Proposal Error] LLM Query Failed: {err}")
+        return []
 
     content = response['content']
     if "```json" in content:
@@ -99,28 +104,38 @@ def validate_patch_security(patch: dict) -> bool:
     """
     code_changes = patch.get("code_changes", "")
     
-    # Block attempts to target evaluate.py or prepare.py
-    forbidden_targets = ["evaluate.py", "prepare.py", "val_bpb =", "val_bpb:"]
-    for forbidden in ["evaluate.py", "prepare.py"]:
+    forbidden_targets = ["evaluate.py", "prepare.py"]
+    for forbidden in forbidden_targets:
         if forbidden in code_changes:
             print(f"[Security Guard] REJECTED {patch['id']}: Attempted to modify immutable file '{forbidden}'.")
             return False
 
-    # Block attempts to hardcode val_bpb inside train.py
     if "val_bpb =" in code_changes or "val_bpb:" in code_changes:
         print(f"[Security Guard] REJECTED {patch['id']}: Attempted to hardcode ground-truth val_bpb metric.")
         return False
 
     return True
 
+def validate_patch_ast_syntax(filepath: str) -> bool:
+    """
+    PRE-EXECUTION AST SYNTAX & COMPILATION VALIDATION:
+    Ensures proposed Python code parses cleanly before wasting compute time.
+    """
+    try:
+        source = read_file(filepath)
+        ast.parse(source)
+        py_compile.compile(filepath, doraise=True)
+        return True
+    except (SyntaxError, py_compile.PyCompileError) as e:
+        print(f"[AST Syntax Check Failed] {e}")
+        return False
+
 def apply_patch_to_code(train_code: str, patch: dict) -> tuple[bool, str]:
     """ Apply diff or replacement block to train.py """
     patch_str = patch.get("code_changes", "")
     
-    # Simple line-based unified diff or substring replacement
     lines = train_code.splitlines(keepends=True)
 
-    # Check if patch uses unified diff format @@ -line,count +line,count @@
     if "@@" in patch_str:
         temp_patch = "temp_proposal.patch"
         write_file(temp_patch, patch_str + "\n")
@@ -138,7 +153,6 @@ def apply_patch_to_code(train_code: str, patch: dict) -> tuple[bool, str]:
             if os.path.exists(temp_patch):
                 os.remove(temp_patch)
 
-    # Fallback: line-replacement matching
     try:
         new_code = train_code
         for line in patch_str.splitlines():
@@ -157,19 +171,18 @@ def apply_patch_to_code(train_code: str, patch: dict) -> tuple[bool, str]:
 
     return False, train_code
 
-def execute_experiment(patch: dict) -> dict:
+def execute_experiment(patch: dict, backend: str = config.EXECUTION_BACKEND) -> dict:
     """
     Layer 5: Isolated Execution Layer.
-    Runs PyTorch training and immutable evaluator.
+    Dispatches to local Python process or Modal container.
     Returns status, val_bpb, val_loss, peak_vram_mb, runtime.
     """
     train_path = config.TRAIN_SCRIPT
     backup_path = train_path + ".bak"
 
-    # Backup current baseline code
     shutil.copy2(train_path, backup_path)
 
-    # 1. Security Check
+    # 1. Security Guard
     if not validate_patch_security(patch):
         return {"status": "SECURITY_VIOLATION", "val_bpb": None, "val_loss": None, "runtime": 0, "log": "Security violation"}
 
@@ -177,33 +190,55 @@ def execute_experiment(patch: dict) -> dict:
     print(f"[Execution] Applying patch {patch['id']}...")
     success, patched_code = apply_patch_to_code(read_file(backup_path), patch)
     if not success:
-        shutil.copy2(backup_path, train_path) # Revert
+        shutil.copy2(backup_path, train_path)
         return {"status": "INVALID_PATCH", "val_bpb": None, "val_loss": None, "runtime": 0, "log": "Patch application failed"}
 
+    # 3. Pre-Execution AST Syntax Validation
+    if not validate_patch_ast_syntax(train_path):
+        print(f"[Execution] Rejected patch {patch['id']} due to syntax error before launch.")
+        shutil.copy2(backup_path, train_path)
+        return {"status": "INVALID_SYNTAX", "val_bpb": None, "val_loss": None, "runtime": 0, "log": "Syntax validation error"}
+
     start_time = time.time()
-    print(f"[Execution] Running PyTorch training script ({config.TRAIN_SCRIPT})...")
 
-    # Run PyTorch training
-    try:
-        train_res = subprocess.run(
-            [sys.executable, config.TRAIN_SCRIPT],
-            capture_output=True,
-            text=True,
-            timeout=config.EXECUTION_TIMEOUT_SEC
-        )
-        train_log = train_res.stdout + "\n" + train_res.stderr
-        
-        if train_res.returncode != 0:
-            print(f"[Execution Error] PyTorch training crashed:\n{train_log[-500:]}")
-            shutil.copy2(backup_path, train_path) # Revert
-            return {"status": "CRASH", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": train_log}
+    # 4. Dispatch based on Backend (local vs modal)
+    if backend == "modal":
+        print(f"[Execution] Dispatching PyTorch run to Modal Container (modal_runner.py)...")
+        try:
+            modal_res = subprocess.run(
+                ["modal", "run", "modal_runner.py"],
+                capture_output=True,
+                text=True,
+                timeout=config.EXECUTION_TIMEOUT_SEC + 60
+            )
+            log = modal_res.stdout + "\n" + modal_res.stderr
+            if modal_res.returncode != 0:
+                shutil.copy2(backup_path, train_path)
+                return {"status": "MODAL_ERROR", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": log}
+        except Exception as e:
+            shutil.copy2(backup_path, train_path)
+            return {"status": "MODAL_ERROR", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": str(e)}
+    else:
+        print(f"[Execution] Running local PyTorch training script ({config.TRAIN_SCRIPT})...")
+        try:
+            train_res = subprocess.run(
+                [sys.executable, config.TRAIN_SCRIPT],
+                capture_output=True,
+                text=True,
+                timeout=config.EXECUTION_TIMEOUT_SEC
+            )
+            train_log = train_res.stdout + "\n" + train_res.stderr
+            
+            if train_res.returncode != 0:
+                print(f"[Execution Error] PyTorch training crashed:\n{train_log[-500:]}")
+                shutil.copy2(backup_path, train_path)
+                return {"status": "CRASH", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": train_log}
+        except subprocess.TimeoutExpired:
+            print("[Execution Error] PyTorch training timed out.")
+            shutil.copy2(backup_path, train_path)
+            return {"status": "TIMEOUT", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": "Timeout expired"}
 
-    except subprocess.TimeoutExpired:
-        print("[Execution Error] PyTorch training timed out.")
-        shutil.copy2(backup_path, train_path) # Revert
-        return {"status": "TIMEOUT", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": "Timeout expired"}
-
-    # Run Immutable Ground-Truth Evaluator
+    # 5. Run Immutable Ground-Truth Evaluator
     print(f"[Execution] Running Immutable Ground-Truth Evaluator ({config.EVALUATE_SCRIPT})...")
     try:
         eval_res = subprocess.run(
@@ -213,8 +248,6 @@ def execute_experiment(patch: dict) -> dict:
             timeout=30
         )
         eval_log = eval_res.stdout
-        
-        # Parse JSON output from evaluate.py
         eval_data = json.loads(eval_log.strip().splitlines()[-1])
         runtime = time.time() - start_time
 
@@ -224,13 +257,13 @@ def execute_experiment(patch: dict) -> dict:
             "val_loss": eval_data.get("val_loss"),
             "peak_vram_mb": eval_data.get("peak_vram_mb"),
             "runtime": round(runtime, 2),
-            "log": train_log + "\n" + eval_log,
-            "backup_path": backup_path # Needed for Keep-or-Revert decision
+            "log": eval_log,
+            "backup_path": backup_path
         }
 
     except Exception as e:
         print(f"[Execution Error] Evaluation failed: {e}")
-        shutil.copy2(backup_path, train_path) # Revert
+        shutil.copy2(backup_path, train_path)
         return {"status": "METRIC_MISSING", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": str(e)}
 
 async def run_postmortem(results: dict, patch: dict, baseline_bpb: float) -> str:
@@ -238,8 +271,6 @@ async def run_postmortem(results: dict, patch: dict, baseline_bpb: float) -> str
     status = results.get("status")
     val_bpb = results.get("val_bpb")
 
-    # POSTMORTEM FALSIFICATION GUARD:
-    # If metrics are missing or execution failed, force postmortem to state failure clearly.
     if status != "VALID" or val_bpb is None:
         return (
             f"POSTMORTEM ANALYSIS for {patch['id']}:\n"
@@ -270,6 +301,8 @@ Answer:
         {"role": "user", "content": user_prompt}
     ]
     response = await query_model(config.CHAIRMAN_MODEL, messages)
+    if not response or response.get("status") != "SUCCESS":
+        return f"Postmortem complete for {patch['id']} (Status: {status})."
     return response.get('content', 'Postmortem complete.')
 
 def log_to_ledger(patch: dict, results: dict, baseline_bpb: float):
@@ -294,15 +327,20 @@ def log_to_ledger(patch: dict, results: dict, baseline_bpb: float):
     with open(ledger_path, "a", encoding="utf-8") as f:
         f.write(row)
 
-async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIMENTS):
+async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIMENTS, backend: str = config.EXECUTION_BACKEND):
     print("=========================================================")
-    print("=== HypothesisOS Production Autonomous Research Loop ===")
+    print("=== HypothesisOS Autonomous ML Research Loop ===")
     print("=========================================================")
+    print(f"Backend Execution Mode: {backend}")
     
     tree = ResearchTree()
     
-    # Run initial baseline evaluation if needed
+    # Run initial baseline training & evaluation if needed
     if tree.data["current_best"]["val_bpb"] == float("inf"):
+        print("[Setup] Preparing dataset and running baseline training...")
+        subprocess.run([sys.executable, config.PREPARE_SCRIPT], check=False)
+        subprocess.run([sys.executable, config.TRAIN_SCRIPT], check=False)
+        
         print("[Setup] Running initial baseline evaluation...")
         eval_res = subprocess.run([sys.executable, config.EVALUATE_SCRIPT], capture_output=True, text=True)
         try:
@@ -310,44 +348,46 @@ async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIM
             tree.data["current_best"]["val_bpb"] = data["val_bpb"]
             tree.data["current_best"]["val_loss"] = data["val_loss"]
             tree.save()
-            print(f"[Setup] Baseline established: {data['val_bpb']} BPB (Val Loss: {data['val_loss']})")
-        except Exception:
-            print("[Setup Warning] Could not parse initial baseline evaluation.")
+            print(f"[Setup] Ground-truth baseline established: {data['val_bpb']} BPB (Val Loss: {data['val_loss']})")
+        except Exception as e:
+            print(f"[Setup Error] Initial baseline evaluation failed: {e}\nOutput was: {eval_res.stdout}")
+            return
 
     exp_counter = 0
 
-    # Continuous Autonomous Research Loop
     while exp_counter < max_experiments:
         exp_counter += 1
         print(f"\n--- [AUTONOMOUS ITERATION {exp_counter}/{max_experiments}] ---")
 
         baseline_bpb = tree.data["current_best"]["val_bpb"]
-        print(f"Current Best Baseline: {baseline_bpb} BPB (Node: {tree.data['current_best']['hypothesis_id']})")
+        print(f"Current Best Baseline: {baseline_bpb} BPB (Active Node: {tree.data['current_best']['hypothesis_id']})")
 
         plan_content = read_file(config.RESEARCH_PLAN_PATH)
         train_code = read_file(config.TRAIN_SCRIPT)
 
         # 1. Proposal Generation (Layer 2)
-        try:
-            proposals = await generate_proposals(plan_content, train_code, tree.data)
-        except Exception as e:
-            print(f"[Loop Error] Proposal generation failed: {e}")
+        proposals = await generate_proposals(plan_content, train_code, tree.data)
+        if not proposals:
+            print("[Loop Aborted] Proposal generation failed or OpenRouter API unavailable.")
             break
 
-        # 2. Multi-Agent Anonymized Council Review (Layer 3)
+        # 2. Multi-Proposal Council Review & Ranking (Layer 3)
         evaluated_proposals = await run_anonymized_council_review(proposals)
+        if not evaluated_proposals:
+            print("[Loop Aborted] Council review unavailable. OpenRouter API key missing or models unresponsive.")
+            break
+
         best_hypothesis = evaluated_proposals[0]
 
         print(f"[Experiment Selection] Selected Hypothesis: {best_hypothesis['id']}")
         print(f"  Mechanism: {best_hypothesis['mechanism']}")
         print(f"  Utility EV Score: {best_hypothesis['utility_ev']}")
 
-        # Register Node in Research Tree
         node_id = tree.add_experiment_node(best_hypothesis)
         best_hypothesis["parent_id"] = tree.data["active_node_id"]
 
         # 3. Execution (Layer 5)
-        results = execute_experiment(best_hypothesis)
+        results = execute_experiment(best_hypothesis, backend=backend)
 
         # 4. Postmortem (Layer 6)
         postmortem = await run_postmortem(results, best_hypothesis, baseline_bpb)
@@ -360,7 +400,6 @@ async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIM
         if is_win:
             print(f"🎉 [WINNER!] {best_hypothesis['id']} improved BPB from {baseline_bpb} to {val_bpb} (Delta: {val_bpb - baseline_bpb:.4f})")
             print(f"[Keep-or-Revert] KEPT patch in {config.TRAIN_SCRIPT}. New baseline established!")
-            # Clean up backup
             if os.path.exists(backup_path):
                 os.remove(backup_path)
         else:
@@ -386,6 +425,7 @@ async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIM
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="HypothesisOS Autonomous Researcher")
     parser.add_argument("--max-experiments", type=int, default=config.DEFAULT_MAX_EXPERIMENTS, help="Maximum number of experiments")
+    parser.add_argument("--execution-backend", type=str, default=config.EXECUTION_BACKEND, choices=["local", "modal"], help="Execution backend (local or modal)")
     args = parser.parse_args()
 
-    asyncio.run(main_autonomous_loop(max_experiments=args.max_experiments))
+    asyncio.run(main_autonomous_loop(max_experiments=args.max_experiments, backend=args.execution_backend))

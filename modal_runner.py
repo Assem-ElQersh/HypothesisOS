@@ -1,11 +1,10 @@
 import modal
 import os
 import subprocess
-import json
 
 app = modal.App("hypothesis-os-executor")
 
-# 1. Build persistent Image with PyTorch and dependencies
+# Persistent Image with PyTorch & scientific dependencies
 autoresearch_image = (
     modal.Image.debian_slim(python_version="3.10")
     .pip_install(
@@ -20,39 +19,38 @@ autoresearch_image = (
 
 @app.function(
     image=autoresearch_image,
-    gpu="any",            # Flexible GPU provisioning
-    timeout=300,          # 5 minute hard execution limit
+    gpu="any",            # Flexible GPU allocation
+    timeout=300,          # 5 minute execution timeout
 )
 def run_training_experiment():
-    """Runs train.py and evaluate.py on Modal GPU container."""
+    """Runs PyTorch training and immutable evaluation in Modal container."""
     os.chdir("/app/autoresearch")
 
-    print("[Modal H100 Container] Running PyTorch prepare script...")
+    print("[Modal Container] Running dataset preparation script...")
     subprocess.run(["python", "prepare.py"], check=False)
 
-    print("[Modal H100 Container] Running PyTorch train script...")
+    print("[Modal Container] Running PyTorch train script...")
     train_res = subprocess.run(["python", "train.py"], capture_output=True, text=True, check=False)
-
     train_log = train_res.stdout + "\n" + train_res.stderr
 
     if train_res.returncode != 0:
         return "CRASH", train_log
 
-    print("[Modal H100 Container] Running Immutable Evaluator...")
+    print("[Modal Container] Running Immutable Evaluator...")
     eval_res = subprocess.run(["python", "evaluate.py"], capture_output=True, text=True, check=False)
     eval_log = eval_res.stdout
 
-    full_log = train_log + "\n--- EVALUATION OUTPUT ---\n" + eval_log
+    full_log = train_log + "\n--- IMMUTABLE EVALUATION OUTPUT ---\n" + eval_log
     status = "VALID" if eval_res.returncode == 0 else "FAILED"
 
     return status, full_log
 
 @app.local_entrypoint()
 def main():
-    print("[Modal Dispatcher] Dispatching PyTorch training run to Modal...")
+    print("[Modal Dispatcher] Offloading PyTorch training run to Modal...")
     status, log_content = run_training_experiment.remote()
 
-    print(f"[Modal Dispatcher] Execution finished with status: {status}")
+    print(f"[Modal Dispatcher] Container execution finished with status: {status}")
     with open("autoresearch/run.log", "w", encoding="utf-8") as f:
         f.write(log_content)
 

@@ -1,23 +1,29 @@
 import os
+os.environ["MKL_THREADING_LAYER"] = "GNU"
 import sys
 import math
 import time
+import random
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+# Fix random seed for determinism & reproducibility across runs
+SEED = 42
+torch.manual_seed(SEED)
+random.seed(SEED)
+
 # --- Hyperparameters & Model Configuration ---
-# LLM Proposal Engine can modify these hyperparameters or neural architecture components below.
+# LLM Proposal Engine can modify hyperparameters or architecture below.
 batch_size = 16
 block_size = 32
-max_iters = 300
-eval_interval = 50
-learning_rate = 0.003
+learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 n_embd = 64
 n_head = 4
 n_layer = 2
 dropout = 0.1
+TIME_BUDGET_SEC = 10.0 # Fixed wall-clock compute budget per trial
 
 class Head(nn.Module):
     """ One head of self-attention """
@@ -33,7 +39,7 @@ class Head(nn.Module):
         B, T, C = x.shape
         k = self.key(x)   # (B, T, head_size)
         q = self.query(x) # (B, T, head_size)
-        wei = q @ k.transpose(-2, -1) * (C ** -0.5) # (B, T, T)
+        wei = q @ k.transpose(-2, -1) * (C ** -0.5)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
         wei = F.softmax(wei, dim=-1)
         wei = self.dropout(wei)
@@ -69,7 +75,7 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 class Block(nn.Module):
-    """ Transformer block: communication followed by computation """
+    """ Transformer block """
     def __init__(self, n_embd, n_head):
         super().__init__()
         head_size = n_embd // n_head
@@ -94,12 +100,12 @@ class LanguageModel(nn.Module):
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
-        tok_emb = self.token_embedding_table(idx) # (B,T,C)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
+        tok_emb = self.token_embedding_table(idx)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=device))
         x = tok_emb + pos_emb
         x = self.blocks(x)
         x = self.ln_f(x)
-        logits = self.lm_head(x) # (B,T,vocab_size)
+        logits = self.lm_head(x)
 
         if targets is None:
             loss = None
@@ -133,23 +139,38 @@ def train_model():
     model = LanguageModel(vocab_size).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-    print(f"[Train] Starting PyTorch model training on {device} (iters: {max_iters}, lr: {learning_rate})...")
+    print(f"[Train] Starting PyTorch model training on {device} (Wall-clock budget: {TIME_BUDGET_SEC}s, lr: {learning_rate})...")
+    
     start_time = time.time()
+    deadline = start_time + TIME_BUDGET_SEC
+    step_count = 0
 
-    for iter in range(max_iters):
+    # TRUE WALL-CLOCK TIME BUDGET LOOP
+    while time.time() < deadline:
         xb, yb = get_batch(train_data, block_size, batch_size)
         logits, loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
+        step_count += 1
 
-        if iter % eval_interval == 0 or iter == max_iters - 1:
-            print(f"[Train] iter {iter:4d}: loss {loss.item():.4f}")
-
-    training_time = time.time() - start_time
+    elapsed_time = time.time() - start_time
     save_path = os.path.join(current_dir, "model.pt")
-    torch.save({"model_state_dict": model.state_dict(), "vocab_size": vocab_size, "n_embd": n_embd, "block_size": block_size}, save_path)
-    print(f"[Train] Model training complete in {training_time:.2f}s. Saved to {save_path}.")
+
+    # SAVE COMPLETE CHECKPOINT METADATA SO EVALUATE.PY DOES NOT IMPORT ANYTHING FROM TRAIN.PY
+    checkpoint_metadata = {
+        "model_state_dict": model.state_dict(),
+        "vocab_size": vocab_size,
+        "n_embd": n_embd,
+        "n_head": n_head,
+        "n_layer": n_layer,
+        "block_size": block_size,
+        "dropout": dropout,
+        "step_count": step_count,
+        "elapsed_time": round(elapsed_time, 2)
+    }
+    torch.save(checkpoint_metadata, save_path)
+    print(f"[Train] Training complete ({step_count} steps in {elapsed_time:.2f}s). Checkpoint saved to {save_path}.")
 
 if __name__ == "__main__":
     train_model()

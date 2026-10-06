@@ -1,9 +1,9 @@
 {
-  "objective": "Minimize validation BPB (bits per byte) on PyTorch language model.",
+  "objective": "Minimize validation BPB (bits per byte) on PyTorch language model architecture.",
   "current_best": {
-    "val_bpb": 0.237,
-    "val_loss": 0.1643,
-    "hypothesis_id": "HYP-757"
+    "val_bpb": 0.1672,
+    "val_loss": 0.1159,
+    "hypothesis_id": "baseline"
   },
   "root_id": "root",
   "nodes": {
@@ -13,91 +13,11 @@
       "mechanism": "Initial PyTorch Baseline Model",
       "val_bpb": null,
       "status": "VALID",
-      "children": [
-        "HYP-757"
-      ]
-    },
-    "HYP-757": {
-      "node_id": "HYP-757",
-      "parent_id": "root",
-      "mechanism": "Tune learning rate to 0.003 for faster convergence",
-      "risk": "Low",
-      "patch_diff": "@@ -13,1 +13,1 @@\n-learning_rate = 1e-3\n+learning_rate = 0.003",
-      "utility_ev": 1.25,
-      "created_at": "2026-10-06T16:06:42.986691",
-      "status": "VALID",
-      "val_bpb": 0.237,
-      "val_loss": 0.1643,
-      "delta_bpb": -0.5678,
-      "children": [
-        "HYP-454",
-        "HYP-166"
-      ],
-      "postmortem": "Mock response"
-    },
-    "HYP-454": {
-      "node_id": "HYP-454",
-      "parent_id": "HYP-757",
-      "mechanism": "Tune learning rate to 0.002 for faster convergence",
-      "risk": "Low",
-      "patch_diff": "@@ -13,1 +13,1 @@\n-learning_rate = 1e-3\n+learning_rate = 0.002",
-      "utility_ev": 1.25,
-      "created_at": "2026-10-06T16:06:50.697928",
-      "status": "INVALID_PATCH",
-      "val_bpb": null,
-      "val_loss": null,
-      "delta_bpb": null,
-      "children": [],
-      "postmortem": "POSTMORTEM ANALYSIS for HYP-454:\nExecution Status: INVALID_PATCH.\nFailure Reason: Experiment failed during execution or evaluation. No empirical metric improvements recorded."
-    },
-    "HYP-166": {
-      "node_id": "HYP-166",
-      "parent_id": "HYP-757",
-      "mechanism": "Tune learning rate to 0.003 for faster convergence",
-      "risk": "Low",
-      "patch_diff": "@@ -13,1 +13,1 @@\n-learning_rate = 1e-3\n+learning_rate = 0.003",
-      "utility_ev": 1.25,
-      "created_at": "2026-10-06T16:06:50.700811",
-      "status": "INVALID_PATCH",
-      "val_bpb": null,
-      "val_loss": null,
-      "delta_bpb": null,
-      "children": [],
-      "postmortem": "POSTMORTEM ANALYSIS for HYP-166:\nExecution Status: INVALID_PATCH.\nFailure Reason: Experiment failed during execution or evaluation. No empirical metric improvements recorded."
+      "children": []
     }
   },
-  "active_node_id": "HYP-757",
-  "proven_wins": [
-    "HYP-757"
-  ],
-  "proven_failures": [
-    "HYP-454",
-    "HYP-166"
-  ],
-  "trajectory": [
-    {
-      "timestamp": "2026-10-06T16:06:50.690336",
-      "node_id": "HYP-757",
-      "status": "VALID",
-      "val_bpb": 0.237,
-      "delta_bpb": -0.5678,
-      "is_win": true
-    },
-    {
-      "timestamp": "2026-10-06T16:06:50.700141",
-      "node_id": "HYP-454",
-      "status": "INVALID_PATCH",
-      "val_bpb": null,
-      "delta_bpb": null,
-      "is_win": false
-    },
-    {
-      "timestamp": "2026-10-06T16:06:50.702428",
-      "node_id": "HYP-166",
-      "status": "INVALID_PATCH",
-      "val_bpb": null,
-      "delta_bpb": null,
-      "is_win": false
-    }
-  ]
+  "active_node_id": "root",
+  "proven_wins": [],
+  "proven_failures": [],
+  "trajectory": []
 }
