@@ -155,38 +155,55 @@ class ResearchTree:
         self.update_research_plan_file()
 
     def select_expansion_node(self, c_param: float = 1.414) -> str:
-        """ Upper Confidence Bound (UCB1) tree search algorithm for node selection """
+        """
+        True UCT (Upper Confidence bounds applied to Trees) search algorithm.
+        Traverses parent -> child links starting from 'root' down the DAG:
+        At each node u, chooses child v maximizing UCB1(v) = (w_v / n_v) + c * sqrt(ln(n_u) / n_v).
+        """
         nodes = self.data.get("nodes", {})
-        if not nodes:
+        if not nodes or "root" not in nodes:
             return "root"
-        
-        total_visits = sum(n.get("visits", 1) for n in nodes.values())
-        if total_visits == 0:
-            total_visits = 1
-        
-        best_node_id = "root"
-        best_ucb = -float("inf")
-        
-        for nid, node in nodes.items():
-            # Only expand valid or root nodes
-            if node.get("status") not in ["VALID", "PENDING"] and nid != "root":
-                continue
+
+        curr_id = "root"
+        while True:
+            curr_node = nodes.get(curr_id)
+            if not curr_node:
+                break
             
-            n_i = node.get("visits", 0)
-            if n_i == 0:
-                # Unvisited valid nodes get top priority
-                return nid
+            children_ids = [
+                cid for cid in curr_node.get("children", [])
+                if cid in nodes and nodes[cid].get("status") in ["VALID", "PENDING"]
+            ]
             
-            w_i = node.get("wins", 0)
-            exploitation = w_i / n_i
-            exploration = c_param * math.sqrt(math.log(total_visits) / n_i)
-            ucb_score = exploitation + exploration
-            
-            if ucb_score > best_ucb:
-                best_ucb = ucb_score
-                best_node_id = nid
-                
-        return best_node_id
+            # If no valid children, this node is an expandable leaf
+            if not children_ids:
+                return curr_id
+
+            # Check if any child is unvisited
+            unvisited = [cid for cid in children_ids if nodes[cid].get("visits", 0) == 0]
+            if unvisited:
+                return unvisited[0]
+
+            # All children visited -> select child with max UCB1
+            n_parent = max(curr_node.get("visits", 1), 1)
+            best_child = children_ids[0]
+            best_ucb = -float("inf")
+
+            for cid in children_ids:
+                c_node = nodes[cid]
+                n_i = c_node.get("visits", 1)
+                w_i = c_node.get("wins", 0)
+                exploitation = w_i / max(n_i, 1)
+                exploration = c_param * math.sqrt(math.log(n_parent) / max(n_i, 1))
+                score = exploitation + exploration
+
+                if score > best_ucb:
+                    best_ucb = score
+                    best_child = cid
+
+            curr_id = best_child
+
+        return curr_id
 
     def get_research_insights(self) -> dict:
         """ Synthesize structured insights on successful mechanisms and failure patterns """

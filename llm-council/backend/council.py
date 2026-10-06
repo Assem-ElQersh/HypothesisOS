@@ -130,7 +130,7 @@ Provide your evaluation STRICTLY as a JSON dictionary matching this exact schema
         print(f"[Council Notice] OpenRouter API unavailable or returned unparseable reviews.")
         return []
 
-    # Calculate Borda Rank Matrix & Kendall's W
+    # Calculate Mean-Rank Matrix & Kendall's W Concordance
     lbl_list = list(label_to_prop.keys())
     num_props = len(lbl_list)
     rank_matrices = []
@@ -163,8 +163,8 @@ Provide your evaluation STRICTLY as a JSON dictionary matching this exact schema
         avg_cost = float(np.mean([e["cost"] for e in evals]))
         avg_ev = float(np.mean([e["ev"] for e in evals]))
 
-        borda_rank = float(avg_ranks[idx])
-        rank_bonus = 0.5 + 0.5 * ((num_props - borda_rank + 1) / num_props)
+        mean_rank = float(avg_ranks[idx])
+        rank_bonus = 0.5 + 0.5 * ((num_props - mean_rank + 1) / num_props)
         final_score = avg_ev * rank_bonus
 
         prop_copy = dict(prop)
@@ -178,7 +178,7 @@ Provide your evaluation STRICTLY as a JSON dictionary matching this exact schema
             "reviewer_count": len(evals),
             "kendalls_w": round(kendalls_w, 4),
             "rank_disagreement": rank_disagreement,
-            "borda_rank": round(borda_rank, 2),
+            "mean_rank": round(mean_rank, 2),
             "reasoning": evals[0]["reasoning"]
         }
         prop_copy["utility_ev"] = round(final_score, 4)

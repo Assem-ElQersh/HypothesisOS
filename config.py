@@ -14,13 +14,13 @@ class Config:
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     
-    # Model selections (decoupled from orchestrator logic - using OpenRouter free models router)
+    # Model selections (decoupled from orchestrator logic - explicitly pinned reviewer models)
     PROPOSER_MODEL = os.getenv("PROPOSER_MODEL", "openrouter/free")
     CHAIRMAN_MODEL = os.getenv("CHAIRMAN_MODEL", "openrouter/free")
     COUNCIL_MODELS = [
-        os.getenv("MODEL_1", "openrouter/free"),
-        os.getenv("MODEL_2", "openrouter/free"),
-        os.getenv("MODEL_3", "openrouter/free")
+        os.getenv("MODEL_1", "meta-llama/llama-3.3-70b-instruct:free"),
+        os.getenv("MODEL_2", "deepseek/deepseek-r1:free"),
+        os.getenv("MODEL_3", "google/gemini-2.5-flash:free")
     ]
     
     # Information gain & Novelty weights for Council EV calculation

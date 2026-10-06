@@ -142,14 +142,14 @@ def validate_patch_security(patch: dict) -> bool:
     """
     IMMUTABLE EVALUATION BOUNDARY GUARD:
     Ensures proposals ONLY modify train.py and do NOT tamper with evaluation,
-    ground-truth val_bpb calculation, or import shortcuts.
+    ground-truth val_bpb calculation, validation dataset files (val.pt), or import shortcuts.
     """
     code_changes = patch.get("code_changes", "")
     
-    forbidden_targets = ["evaluate.py", "prepare.py"]
+    forbidden_targets = ["evaluate.py", "prepare.py", "val.pt"]
     for forbidden in forbidden_targets:
         if forbidden in code_changes:
-            print(f"[Security Guard] REJECTED {patch['id']}: Attempted to modify immutable file '{forbidden}'.")
+            print(f"[Security Guard] REJECTED {patch['id']}: Attempted to access or modify forbidden target '{forbidden}'.")
             return False
 
     if "val_bpb =" in code_changes or "val_bpb:" in code_changes:

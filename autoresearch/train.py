@@ -27,7 +27,7 @@ n_embd = 64
 n_head = 4
 n_layer = 2
 dropout = 0.1
-TIME_BUDGET_SEC = 10.0 # Fixed wall-clock compute budget per trial
+TIME_BUDGET_SEC = 30.0 # Fixed wall-clock compute budget per trial (30s)
 
 class Head(nn.Module):
     """ One head of self-attention """
