@@ -22,6 +22,8 @@ HypothesisOS builds upon and contrasts with key research in autonomous scientifi
 
 ## System Architecture
 
+![HypothesisOS System Architecture Schema](assets/hypothesis_os_schema.jpg)
+
 ```mermaid
 graph TD
     Root["Research Tree (UCT Path Search)"] --> Proposer["Proposal Engine (Layer 2)"]
