@@ -1,6 +1,15 @@
 import os
 
 class Config:
+    # Try loading .env file if present
+    _env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(_env_file):
+        with open(_env_file, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                if "=" in _line and not _line.strip().startswith("#"):
+                    _k, _v = _line.strip().split("=", 1)
+                    os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+
     # OpenRouter API settings
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
