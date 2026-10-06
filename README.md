@@ -53,8 +53,8 @@ graph TD
 
 ### 3. Tree-Structured Hypothesis Search & Branch Isolation (`research_tree.py`)
 - **State-Tree UCT Search Expansion**: Traverses parent-child links down the DAG from `root` using Upper Confidence bounds applied to Trees (UCT):
-  $$\text{UCT}_v = \frac{w_v}{n_v} + c \sqrt{\frac{\ln n_{\text{parent}}}{n_v}}$$
-- **Recursive Value Backpropagation**: Upon experiment completion, results ($n_v, w_v$) are recursively backpropagated from the leaf node up along all ancestor parent pointers to `root`:
+  $$\text{UCT}(v) = \frac{w_v}{n_v} + c \cdot \sqrt{\frac{\ln(n_{\text{parent}})}{n_v}}$$
+- **Recursive Value Backpropagation**: Upon experiment completion, results $(n_v, w_v)$ are recursively backpropagated from the leaf node up along all ancestor parent pointers to `root`:
   $$\forall u \in \text{Path}(\text{leaf} \to \text{root}): \quad n_u \leftarrow n_u + 1, \quad w_u \leftarrow w_u + \mathbb{I}(\text{win})$$
 - **Branch-Isolated Code Restoration**: Every node stores an exact `full_code_snapshot`. Expanding branch $P$ explicitly restores $P$'s source code snapshot to `train.py` before generating patches, preventing cross-branch code contamination.
 - **Structured Memory Insights**: Synthesizes proven wins and failure patterns into structured context injected into proposal generation.
