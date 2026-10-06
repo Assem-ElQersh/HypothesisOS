@@ -5,13 +5,13 @@ class Config:
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     
-    # Model selections (decoupled from orchestrator logic)
-    PROPOSER_MODEL = os.getenv("PROPOSER_MODEL", "google/gemini-2.5-flash")
-    CHAIRMAN_MODEL = os.getenv("CHAIRMAN_MODEL", "anthropic/claude-3.5-sonnet")
+    # Model selections (decoupled from orchestrator logic - using OpenRouter free models by default)
+    PROPOSER_MODEL = os.getenv("PROPOSER_MODEL", "google/gemini-2.5-flash:free")
+    CHAIRMAN_MODEL = os.getenv("CHAIRMAN_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
     COUNCIL_MODELS = [
-        "google/gemini-2.5-flash",
-        "anthropic/claude-3.5-sonnet",
-        "meta-llama/llama-3.3-70b-instruct"
+        os.getenv("MODEL_1", "google/gemini-2.5-flash:free"),
+        os.getenv("MODEL_2", "meta-llama/llama-3.3-70b-instruct:free"),
+        os.getenv("MODEL_3", "deepseek/deepseek-r1:free")
     ]
     
     # Execution & Hardware Settings
