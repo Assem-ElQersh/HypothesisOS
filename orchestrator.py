@@ -412,7 +412,7 @@ async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIM
         eval_res = subprocess.run([sys.executable, config.EVALUATE_SCRIPT], capture_output=True, text=True)
         try:
             data = json.loads(eval_res.stdout.strip().splitlines()[-1])
-            tree.set_baseline(data["val_bpb"], data["val_loss"])
+            tree.set_baseline(data["val_bpb"], data["val_loss"], code_snapshot=read_file(config.TRAIN_SCRIPT))
             print(f"[Setup] Ground-truth baseline established: {data['val_bpb']} BPB (Val Loss: {data['val_loss']})")
         except Exception as e:
             print(f"[Setup Error] Initial baseline evaluation failed: {e}\nOutput was: {eval_res.stdout}")
@@ -424,12 +424,18 @@ async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIM
         exp_counter += 1
         print(f"\n--- [AUTONOMOUS ITERATION {exp_counter}/{max_experiments}] ---")
 
-        # Tree Search: Select parent expansion node using UCB1
+        # Tree Search: Select parent expansion node using UCT path traversal
         active_node_id = tree.select_expansion_node()
         active_node = tree.data["nodes"].get(active_node_id, {})
         baseline_bpb = active_node.get("val_bpb")
         if baseline_bpb is None:
             baseline_bpb = tree.data["current_best"]["val_bpb"]
+
+        # Branch State Isolation: Restore exact code snapshot of selected parent expansion node
+        parent_snapshot = tree.get_node_code_snapshot(active_node_id)
+        if parent_snapshot:
+            write_file(config.TRAIN_SCRIPT, parent_snapshot)
+            print(f"[Branch Isolation] Restored train.py code state to match parent node '{active_node_id}'.")
 
         print(f"Selected Expansion Node: '{active_node_id}' (Baseline: {baseline_bpb} BPB)")
 
@@ -457,10 +463,11 @@ async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIM
         print(f"  Mechanism: {best_hypothesis['mechanism']}")
         print(f"  Utility EV Score: {best_hypothesis['utility_ev']}")
 
-        node_id = tree.add_experiment_node(best_hypothesis, parent_id=active_node_id)
+        node_id = tree.add_experiment_node(best_hypothesis, parent_id=active_node_id, code_snapshot=train_code)
 
         # 3. Execution (Layer 5)
         results = execute_experiment(best_hypothesis, backend=backend)
+        current_patched_code = read_file(config.TRAIN_SCRIPT)
 
         # 4. Postmortem (Layer 6)
         postmortem = await run_postmortem(results, best_hypothesis, baseline_bpb)
@@ -472,21 +479,27 @@ async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIM
 
         if is_win:
             print(f"🎉 [WINNER!] {best_hypothesis['id']} improved BPB from {baseline_bpb} to {val_bpb} (Delta: {val_bpb - baseline_bpb:.4f})")
-            print(f"[Keep-or-Revert] KEPT patch in {config.TRAIN_SCRIPT}. New baseline established!")
+            print(f"[Keep-or-Revert] KEPT patch in {config.TRAIN_SCRIPT}. New branch baseline established!")
             if os.path.exists(backup_path):
                 os.remove(backup_path)
         else:
             print(f"❌ [REJECTED] {best_hypothesis['id']} failed to beat baseline (Status: {results['status']}, Val BPB: {val_bpb}).")
-            print(f"[Keep-or-Revert] REVERTED {config.TRAIN_SCRIPT} to previous baseline.")
+            print(f"[Keep-or-Revert] REVERTED {config.TRAIN_SCRIPT} to parent branch state.")
             if os.path.exists(backup_path):
                 shutil.copy2(backup_path, config.TRAIN_SCRIPT)
                 os.remove(backup_path)
 
-        # 6. Update Research Tree & Ledger
-        tree.update_experiment_result(node_id, results, postmortem, baseline_bpb)
+        # 6. Update Research Tree (with recursive UCT backprop) & Ledger
+        tree.update_experiment_result(
+            node_id,
+            results,
+            postmortem,
+            baseline_bpb,
+            patched_code_snapshot=current_patched_code if is_win else parent_snapshot
+        )
         log_to_ledger(best_hypothesis, results, baseline_bpb)
 
-        print(f"[Iteration {exp_counter} Complete] Research Tree state saved.")
+        print(f"[Iteration {exp_counter} Complete] Research Tree state & UCT backpropagation saved.")
 
     print("\n=========================================================")
     print("=== Autonomous Research Search Session Complete ===")

@@ -49,9 +49,12 @@ graph TD
   $$\text{EV} = \frac{P_{\text{success}} \cdot \Delta_{\text{improvement}} + \lambda \cdot I_{\text{info}} + \beta \cdot N_{\text{novelty}}}{C_{\text{cost}}}$$
   Where $I_{\text{info}}$ is information gain, $N_{\text{novelty}}$ is architectural novelty, and $C_{\text{cost}}$ is compute cost.
 
-### 3. Tree-Structured Hypothesis Search (`research_tree.py`)
-- **State-Tree UCT Search Expansion**: Replaces greedy branch selection with Upper Confidence bounds applied to Trees (UCT) search traversing parent-child links down the DAG from `root`:
+### 3. Tree-Structured Hypothesis Search & Branch Isolation (`research_tree.py`)
+- **State-Tree UCT Search Expansion**: Traverses parent-child links down the DAG from `root` using Upper Confidence bounds applied to Trees (UCT):
   $$\text{UCT}_v = \frac{w_v}{n_v} + c \sqrt{\frac{\ln n_{\text{parent}}}{n_v}}$$
+- **Recursive Value Backpropagation**: Upon experiment completion, results ($n_v, w_v$) are recursively backpropagated from the leaf node up along all ancestor parent pointers to `root`:
+  $$\forall u \in \text{Path}(\text{leaf} \to \text{root}): \quad n_u \leftarrow n_u + 1, \quad w_u \leftarrow w_u + \mathbb{I}(\text{win})$$
+- **Branch-Isolated Code Restoration**: Every node stores an exact `full_code_snapshot`. Expanding branch $P$ explicitly restores $P$'s source code snapshot to `train.py` before generating patches, preventing cross-branch code contamination.
 - **Structured Memory Insights**: Synthesizes proven wins and failure patterns into structured context injected into proposal generation.
 
 ---
@@ -64,6 +67,8 @@ graph TD
 | Separate `torch.Generator` preserves batch sequences across architectures | `autoresearch/train.py`, `autoresearch/evaluate.py` | Eliminates RNG seed coupling between model size initialization and batch sampling. |
 | Evaluator SHA-256 hash locked with `chmod 444` | `orchestrator.py` | Prevents proposed LLM patches from modifying evaluation metrics or evaluation files. |
 | Kendall's W Concordance $W \in [0, 1]$ rank agreement calculation | `llm-council/backend/council.py` | Replaces standard deviation of raw utilities with true ordinal rank agreement metric. |
+| Recursive UCT backpropagation from leaf to root | `memory/research_tree.py` | Ensures visit/win scores accurately propagate up multi-depth hypothesis branches. |
+| Branch-isolated state restoration (`full_code_snapshot`) | `orchestrator.py` | Guarantees code patches for branch $P$ are evaluated strictly against parent $P$'s state. |
 
 ---
 

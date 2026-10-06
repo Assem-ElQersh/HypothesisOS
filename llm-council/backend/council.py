@@ -167,6 +167,9 @@ Provide your evaluation STRICTLY as a JSON dictionary matching this exact schema
         rank_bonus = 0.5 + 0.5 * ((num_props - mean_rank + 1) / num_props)
         final_score = avg_ev * rank_bonus
 
+        # Dynamic Compute Controller: Compute budget scaling factor based on disagreement
+        disagreement_multiplier = round(1.0 + 0.5 * rank_disagreement, 2)
+
         prop_copy = dict(prop)
         prop_copy["label"] = lbl
         prop_copy["evaluation"] = {
@@ -175,9 +178,11 @@ Provide your evaluation STRICTLY as a JSON dictionary matching this exact schema
             "information_gain": round(avg_info, 4),
             "novelty": round(avg_nov, 4),
             "implementation_cost": round(avg_cost, 4),
+            "reviewer_models": config.COUNCIL_MODELS,
             "reviewer_count": len(evals),
             "kendalls_w": round(kendalls_w, 4),
             "rank_disagreement": rank_disagreement,
+            "disagreement_multiplier": disagreement_multiplier,
             "mean_rank": round(mean_rank, 2),
             "reasoning": evals[0]["reasoning"]
         }
@@ -185,5 +190,5 @@ Provide your evaluation STRICTLY as a JSON dictionary matching this exact schema
         scored_results.append(prop_copy)
 
     scored_results.sort(key=lambda x: x["utility_ev"], reverse=True)
-    print(f"[Council Consensus] Top Proposal: {scored_results[0]['id']} (Score: {scored_results[0]['utility_ev']}, Kendall's W: {kendalls_w:.4f}, Disagreement: {rank_disagreement})")
+    print(f"[Council Consensus] Top Proposal: {scored_results[0]['id']} (Score: {scored_results[0]['utility_ev']}, Kendall's W: {kendalls_w:.4f}, Disagreement: {rank_disagreement}, Budget Scalar: {scored_results[0]['evaluation']['disagreement_multiplier']}x)")
     return scored_results

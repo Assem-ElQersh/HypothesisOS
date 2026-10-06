@@ -53,7 +53,7 @@ class ResearchTree:
         with open(self.filepath, "w", encoding="utf-8") as f:
             json.dump(self.data, f, indent=2)
 
-    def set_baseline(self, val_bpb: float, val_loss: float):
+    def set_baseline(self, val_bpb: float, val_loss: float, code_snapshot: str = ""):
         """ Ground truth baseline metrics setting for root and current_best """
         self.data["current_best"] = {
             "val_bpb": val_bpb,
@@ -65,9 +65,11 @@ class ResearchTree:
             self.data["nodes"]["root"]["val_loss"] = val_loss
             self.data["nodes"]["root"]["visits"] = 1
             self.data["nodes"]["root"]["wins"] = 1
+            if code_snapshot:
+                self.data["nodes"]["root"]["full_code_snapshot"] = code_snapshot
         self.save()
 
-    def add_experiment_node(self, hypothesis: dict, parent_id: str = None) -> str:
+    def add_experiment_node(self, hypothesis: dict, parent_id: str = None, code_snapshot: str = "") -> str:
         if not parent_id:
             parent_id = self.data.get("active_node_id", "root")
 
@@ -78,6 +80,7 @@ class ResearchTree:
             "mechanism": hypothesis["mechanism"],
             "risk": hypothesis.get("risk", "Medium"),
             "patch_diff": hypothesis["code_changes"],
+            "full_code_snapshot": code_snapshot,
             "utility_ev": hypothesis.get("utility_ev", 0.0),
             "created_at": datetime.now().isoformat(),
             "status": "PENDING",
@@ -98,7 +101,36 @@ class ResearchTree:
         self.save()
         return node_id
 
-    def update_experiment_result(self, node_id: str, results: dict, postmortem: str, baseline_bpb: float):
+    def get_node_code_snapshot(self, node_id: str) -> str:
+        """ Retrieve the exact source code snapshot associated with a node or its baseline parent """
+        curr = node_id
+        visited = set()
+        while curr and curr in self.data["nodes"] and curr not in visited:
+            visited.add(curr)
+            node = self.data["nodes"][curr]
+            snapshot = node.get("full_code_snapshot")
+            if snapshot:
+                return snapshot
+            curr = node.get("parent_id")
+        return ""
+
+    def backpropagate_result(self, node_id: str, is_win: bool):
+        """
+        Recursive UCT Value Backpropagation:
+        Ascends parent pointers from node_id up to 'root', updating
+        visits and wins (if is_win) along the entire branch path.
+        """
+        curr = node_id
+        visited = set()
+        while curr and curr in self.data["nodes"] and curr not in visited:
+            visited.add(curr)
+            node = self.data["nodes"][curr]
+            node["visits"] = node.get("visits", 0) + 1
+            if is_win:
+                node["wins"] = node.get("wins", 0) + 1
+            curr = node.get("parent_id")
+
+    def update_experiment_result(self, node_id: str, results: dict, postmortem: str, baseline_bpb: float, patched_code_snapshot: str = ""):
         if node_id not in self.data["nodes"]:
             return
 
@@ -111,7 +143,8 @@ class ResearchTree:
         node["val_bpb"] = val_bpb
         node["val_loss"] = val_loss
         node["postmortem"] = postmortem
-        node["visits"] = node.get("visits", 0) + 1
+        if patched_code_snapshot:
+            node["full_code_snapshot"] = patched_code_snapshot
 
         delta_bpb = (val_bpb - baseline_bpb) if (val_bpb is not None and baseline_bpb is not None) else None
         node["delta_bpb"] = round(delta_bpb, 4) if delta_bpb is not None else None
@@ -120,7 +153,6 @@ class ResearchTree:
         is_win = (status == "VALID" and val_bpb is not None and (baseline_bpb is None or val_bpb < baseline_bpb))
 
         if is_win:
-            node["wins"] = node.get("wins", 0) + 1
             if node_id not in self.data["proven_wins"]:
                 self.data["proven_wins"].append(node_id)
             self.data["current_best"] = {
@@ -134,13 +166,8 @@ class ResearchTree:
             if node_id not in self.data["proven_failures"]:
                 self.data["proven_failures"].append(node_id)
 
-        # Increment parent visit count
-        parent_id = node.get("parent_id")
-        if parent_id and parent_id in self.data["nodes"]:
-            pnode = self.data["nodes"][parent_id]
-            pnode["visits"] = pnode.get("visits", 0) + 1
-            if is_win:
-                pnode["wins"] = pnode.get("wins", 0) + 1
+        # Recursive UCT Value Backpropagation up to root
+        self.backpropagate_result(node_id, is_win)
 
         self.data["trajectory"].append({
             "timestamp": datetime.now().isoformat(),
