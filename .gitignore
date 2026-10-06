@@ -40,5 +40,12 @@ research_ledger.tsv
 research_proposal.md
 deep-research-report.md
 
+# LaTeX Build Artifacts
+*.aux
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+
 # Agent Configuration
 .agents/
