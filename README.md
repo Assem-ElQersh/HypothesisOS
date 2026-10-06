@@ -1,47 +1,97 @@
 # HypothesisOS
 
-HypothesisOS is a hierarchical AI research scientist framework designed to maximize empirical progress per unit of compute.
+HypothesisOS is a hierarchical AI research scientist framework designed to maximize empirical ML research progress per unit of compute.
 
-It marries two paradigms:
-1. **AutoResearch (Execution):** A fixed-budget empirical training loop to validate modifications to a neural network architecture.
-2. **LLM Council (Judgment):** A multi-agent consensus system used to filter proposals, evaluate bug risk, and synthesize postmortem results.
+It marries two core paradigms:
+1. **AutoResearch (Execution):** A PyTorch empirical training loop bounded by an **immutable ground-truth evaluator** (`evaluate.py`), utilizing fixed-budget trials with **Keep-or-Revert** branch semantics.
+2. **LLM Council (Judgment):** A multi-agent consensus system running **anonymized peer review** across parallel LLM models to score proposals by Utility-Adjusted Expected Value (EV).
 
-## Mission: Build a Hierarchical AI Research Scientist
-The objective is not to produce a chatbot, but an autonomous research system. The core principle is that **generation, evaluation, and execution must remain separate.** Empirical results always override theoretical arguments, and the GPU is the source of truth.
+---
 
-## The Operating Loop Paradigm
+## Mission: Build a Production-Grade AI Research Scientist
 
-1. **Layer 1: Research Planner:** Maintains the current objective, known constraints, active hypotheses, and termination criteria. Never modify code without explicitly linking the modification to a hypothesis in the plan.
-2. **Layer 2: Proposal Engine:** Generates 3-5 mutually exclusive candidate hypotheses based on the plan. Evaluates risk, complexity, and expected mechanism of improvement.
-3. **Layer 3: Council Review:** A multi-agent council evaluates each proposal independently for technical risk (OOM, divergence) and scientific plausibility. It exists to reject bad experiments before they consume compute.
-4. **Layer 4: Experiment Selection:** Selects only the highest expected-value experiment. Do not run multiple expensive experiments simultaneously unless explicitly instructed.
-5. **Layer 5: Execution:** Execution must be isolated from reasoning. The selected patch is applied and run against a fixed time budget. Only empirical evidence is collected (validation BPB, runtime, memory).
-6. **Layer 6: Postmortem Council:** After execution, the council analyzes the evidence to answer why the outcome occurred and whether the hypothesis was validated.
+The objective is not to produce a chatbot or a prompt demo, but an autonomous research system. The core scientific principle is that **generation, evaluation, and execution must remain separate.** Empirical results from the immutable ground-truth evaluator always override theoretical arguments—the GPU is the source of truth.
+
+---
+
+## Key Scientific Architecture & Guards
+
+### 1. Immutable Evaluation Boundary (`evaluate.py` vs `train.py`)
+- **Mutable Space (`autoresearch/train.py`)**: The LLM Proposal Engine generates code patches for model architecture, hyperparameters, optimizers, and learning rate schedules in `train.py`.
+- **Immutable Space (`autoresearch/evaluate.py`)**: Dataset loading, validation evaluation loops, cross-entropy calculation, and ground-truth `val_bpb` computation are strictly isolated in `evaluate.py`.
+- **Security Boundary Guard**: The orchestrator inspects proposals via static checks. Any patch attempting to modify `evaluate.py` or hardcode `val_bpb` in `train.py` is flagged as a `SECURITY_VIOLATION` and rejected.
+
+### 2. Multi-Agent Anonymized LLM Council & OpenRouter
+- Proposals are anonymized as `Proposal A`, `Proposal B`, `Proposal C` to eliminate model bias.
+- Evaluated in parallel across multiple peer-review models (e.g. Gemini 2.5 Pro, Claude 3.5 Sonnet, Llama 3.3 70B via OpenRouter).
+- **Utility-Adjusted Expected Value Selection**:
+  $$\text{Utility EV} = \frac{\text{Expected Improvement} \times \text{Probability of Success}}{\text{Implementation Cost (GPU hours)}}$$
+
+### 3. Continuous Loop & Keep-or-Revert Semantics
+- **Continuous Execution Loop**: Runs autonomous search sessions continuously (`python orchestrator.py --max-experiments N`).
+- **Keep-or-Revert Branch Management**:
+  - **WIN** (`val_bpb < baseline_bpb`): The code patch remains **KEPT** in `train.py` on disk as the new baseline for subsequent iterations.
+  - **LOSS / CRASH / FAILED**: The code is immediately **REVERTED** to the baseline code backup. Code on disk always stays synchronized with `current_best`.
+
+### 4. Directed Research Tree Memory
+- **Research Tree (`memory/research_tree.json`)**: Manages a directed experiment graph tracking hypothesis node parentage, git diffs, ground-truth metrics, and postmortem evidence.
+- **Postmortem Falsification Guard**: Forces postmortems to explicitly declare execution failure if metrics are missing or code crashes, eliminating false success narratives.
+
+---
 
 ## Project Structure
+
 ```text
 HypothesisOS/
-├── autoresearch/        # Pure execution layer (fixed budget GPU training)
-├── llm-council/         # API backend for the multi-agent judgement layers
-├── .agents/             # System instructions and operational rules
-├── council/             # Storage for peer-review deliberation state
-├── experiments/         # Output artifacts from executed patches
-├── memory/              # Persistent trajectory and knowledge base
-├── reports/             # Generated postmortems and synthetic findings
-├── orchestrator.py      # The main Python loop binding the hierarchy together
-├── modal_runner.py      # Offloads execution to serverless H100s
-├── research_plan.md     # Current active objectives and constraints
-└── research_ledger.tsv  # Hard record of Hypothesis -> Expected -> Actual BPB
+├── config.py                 # System configuration, model choices, & OpenRouter headers
+├── orchestrator.py           # Rebuilt continuous loop with keep-or-revert & EV selection
+├── modal_runner.py           # Offloads PyTorch execution to serverless GPU containers
+├── research_plan.md          # Dynamically updated research trajectory & plan
+├── research_ledger.tsv       # Hard record of Hypothesis -> Expected -> Actual BPB
+├── autoresearch/
+│   ├── prepare.py            # Dataset preparation & tokenization script
+│   ├── train.py              # Mutable PyTorch NanoGPT model & training loop
+│   └── evaluate.py           # Immutable ground-truth validation evaluator
+├── llm-council/
+│   └── backend/
+│       ├── openrouter.py     # Async OpenRouter API client with prompt caching
+│       └── council.py        # Multi-agent anonymized peer review & Utility EV
+├── memory/
+│   ├── research_tree.py      # Directed graph memory data structure
+│   └── research_tree.json    # Persistent research state & node history
+└── .agents/                  # System instructions & master policies
 ```
 
-## Prompt Caching & System Prompt
-To maximize LLM cost-efficiency and inference speed, HypothesisOS heavily leverages **Prompt Caching**. 
-- The master agent policy is defined in `.agents/system_prompt.txt`.
-- The system prompt is kept completely **stable** and isolated in the `{"role": "system"}` context.
-- All task-specific and dynamic data (like current code and logs) are strictly injected via the `{"role": "user"}` message.
-This ensures the prefix >= 1024 tokens remains an exact match across every execution loop, cutting input-token costs by up to 90%.
+---
 
-## Anti-Failure Rules
-- Reject circular reasoning, self-grading, and popularity arguments.
-- Never claim success without empirical support.
-- The objective is not to produce code or explanations, but to maximize validated research progress per unit of compute.
+## Quickstart
+
+### Prerequisites
+- Python 3.10+
+- PyTorch & `httpx` (`pip install torch httpx`)
+- (Optional) `OPENROUTER_API_KEY` environment variable for live multi-model LLM calls.
+
+### Running an Autonomous Research Session
+
+Run a 5-iteration continuous autonomous research search session:
+
+```bash
+python orchestrator.py --max-experiments 5
+```
+
+The orchestrator will:
+1. Run initial ground-truth baseline evaluation (`evaluate.py`).
+2. Generate 3 candidate code patches for `train.py`.
+3. Conduct anonymized peer review across LLM Council models and pick the top Utility EV hypothesis.
+4. Execute PyTorch model training and measure ground-truth validation BPB.
+5. Apply **Keep-or-Revert**: keep winning code in `train.py` or revert losing code.
+6. Record nodes in `memory/research_tree.json` and update `research_plan.md`.
+
+---
+
+## Prompt Caching & Efficiency
+
+To maximize LLM cost-efficiency and inference speed, HypothesisOS leverages **OpenRouter Prompt Caching**:
+- The master agent policy (`.agents/system_prompt.txt`) is isolated in the `{"role": "system"}` context.
+- Dynamic data (current code, logs) are injected via the `{"role": "user"}` context.
+- Prompt cache headers (`HTTP-Referer`, `X-Title`) are transmitted on every API request.
