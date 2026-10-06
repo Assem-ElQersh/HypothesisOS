@@ -1,79 +1,59 @@
 import modal
 import os
 import subprocess
+import json
 
 app = modal.App("hypothesis-os-executor")
 
-# 1. Build a persistent Image with all dependencies and the downloaded dataset embedded
+# 1. Build persistent Image with PyTorch and dependencies
 autoresearch_image = (
     modal.Image.debian_slim(python_version="3.10")
     .pip_install(
-        "torch", 
-        "numpy", 
-        "pandas", 
-        "tiktoken", 
-        "rustbpe", 
-        "hf-xet",
-        "huggingface-hub",
-        "pygments",
-        "matplotlib",
-        "networkx",
-        "kiwisolver",
-        "pillow",
-        "sympy"
+        "torch",
+        "numpy",
+        "pandas",
+        "tiktoken",
+        "matplotlib"
     )
-    # Add local directory instead of mounting as per current Modal best practices
     .add_local_dir("autoresearch", remote_path="/app/autoresearch")
 )
 
 @app.function(
     image=autoresearch_image,
-    gpu="H100",          # Provision exactly 1 H100
-    timeout=600,         # 10 minute absolute timeout (train loop is 5 mins)
+    gpu="any",            # Flexible GPU provisioning
+    timeout=300,          # 5 minute hard execution limit
 )
 def run_training_experiment():
-    """Runs train.py on the Modal H100 and returns the log."""
+    """Runs train.py and evaluate.py on Modal GPU container."""
     os.chdir("/app/autoresearch")
-    
-    print("Starting H100 Training Run (5 minute budget)...")
-    try:
-        # We run the train script and capture the log
-        result = subprocess.run(
-            ["python", "train.py"], 
-            capture_output=True, 
-            text=True,
-            timeout=330,  # 5.5 min hard timeout inside the container
-            check=False
-        )
-        log_content = result.stdout + "\n" + result.stderr
-        
-        if result.returncode == 0:
-            status = "VALID"
-        else:
-            if "OutOfMemoryError" in log_content or "CUDA out of memory" in log_content:
-                status = "OOM"
-            else:
-                status = "FAILED"
-                
-    except subprocess.TimeoutExpired as e:
-        # The internal subprocess timed out
-        log_content = (e.stdout.decode() if e.stdout else "") + "\n" + (e.stderr.decode() if e.stderr else "") + "\nTIMEOUT EXPIRED"
-        status = "TIMEOUT"
-    except Exception as e:
-        log_content = str(e)
-        status = "FAILED"
-        
-    return status, log_content
+
+    print("[Modal H100 Container] Running PyTorch prepare script...")
+    subprocess.run(["python", "prepare.py"], check=False)
+
+    print("[Modal H100 Container] Running PyTorch train script...")
+    train_res = subprocess.run(["python", "train.py"], capture_output=True, text=True, check=False)
+
+    train_log = train_res.stdout + "\n" + train_res.stderr
+
+    if train_res.returncode != 0:
+        return "CRASH", train_log
+
+    print("[Modal H100 Container] Running Immutable Evaluator...")
+    eval_res = subprocess.run(["python", "evaluate.py"], capture_output=True, text=True, check=False)
+    eval_log = eval_res.stdout
+
+    full_log = train_log + "\n--- EVALUATION OUTPUT ---\n" + eval_log
+    status = "VALID" if eval_res.returncode == 0 else "FAILED"
+
+    return status, full_log
 
 @app.local_entrypoint()
 def main():
-    print("Dispatching experiment to Modal H100...")
+    print("[Modal Dispatcher] Dispatching PyTorch training run to Modal...")
     status, log_content = run_training_experiment.remote()
-    
-    print(f"Modal execution finished with status: {status}")
-    
-    # Save the log locally so the orchestrator can read it
+
+    print(f"[Modal Dispatcher] Execution finished with status: {status}")
     with open("autoresearch/run.log", "w", encoding="utf-8") as f:
         f.write(log_content)
-        
+
     print("Log saved to autoresearch/run.log.")

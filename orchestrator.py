@@ -5,14 +5,17 @@ import json
 import asyncio
 import subprocess
 import shutil
+import argparse
 from datetime import datetime
 
-# Add llm-council to path so we can use its backend
-sys.path.append(os.path.join(os.path.dirname(__file__), "llm-council"))
-from backend.openrouter import query_model
+# Path setup
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "llm-council"))
 
-PROPOSER_MODEL = "google/gemini-2.5-flash"
-CHAIRMAN_MODEL = "google/gemini-3-pro-preview"
+from config import config
+from backend.openrouter import query_model
+from backend.council import run_anonymized_council_review
+from memory.research_tree import ResearchTree
 
 def read_file(filepath):
     if not os.path.exists(filepath):
@@ -24,32 +27,46 @@ def write_file(filepath, content):
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
 
-# Load the stable system prompt once
 SYSTEM_PROMPT = read_file(".agents/system_prompt.txt")
+if not SYSTEM_PROMPT:
+    SYSTEM_PROMPT = (
+        "You are an autonomous AI ML Research Scientist. "
+        "Your objective is to propose scientific hypotheses to decrease validation BPB in a PyTorch language model. "
+        "Generate realistic code modifications for train.py only."
+    )
 
-async def generate_proposals(plan_content, train_code):
-    """Layer 2: Proposal Engine"""
-    user_prompt = f"""Your goal is to decrease validation BPB in a 5-minute training budget.
-Generate EXACTLY 3 mutually exclusive, diverse hypotheses (patches) for train.py.
+async def generate_proposals(plan_content: str, train_code: str, tree_state: dict) -> list:
+    """ Layer 2: Proposal Engine """
+    proven_wins = tree_state.get("proven_wins", [])
+    proven_failures = tree_state.get("proven_failures", [])
 
-CURRENT RESEARCH PLAN:
+    user_prompt = f"""You are the Proposal Engine for an autonomous ML research scientist.
+Goal: Decrease validation BPB (bits per byte) on a PyTorch Transformer language model.
+
+CURRENT RESEARCH STATE:
 {plan_content}
 
-CURRENT TRAIN.PY:
-{train_code}
+PROVEN WINS (DO NOT REPEAT KNOWN FAILURES):
+- Wins: {proven_wins}
+- Failures: {proven_failures}
 
-For each hypothesis, provide:
-1. Mechanism of improvement
-2. Risk level & Complexity
-3. The EXACT Python code replacement for train.py. Provide it as a list of search/replace blocks.
+CURRENT TRAIN.PY CODE:
+```python
+{train_code}
+```
+
+REQUIREMENTS:
+1. Generate EXACTLY 3 mutually exclusive, diverse hypotheses (code patches for train.py).
+2. DO NOT alter evaluation code or override metric computations. Only modify hyperparameters, neural network layers, optimizer, or training schedule in train.py.
+3. Provide code changes as clean, unified diff strings or replace blocks.
 
 Format your output STRICTLY as a JSON list of dictionaries with this exact schema:
 [
   {{
-    "id": "HYP-001",
-    "mechanism": "Use adamw to improve convergence",
-    "risk": "Low",
-    "code_changes": "@@ -6,3 +6,3 @@\\n     time.sleep(1)\\n-    val_bpb = 3.42 + random.uniform(-0.05, 0.05)\\n+    val_bpb = 3.20 + random.uniform(-0.05, 0.05)\\n     peak_vram_mb = 18000"
+    "id": "HYP-101",
+    "mechanism": "Increase transformer layers from 2 to 4 to improve representation capacity",
+    "risk": "Medium",
+    "code_changes": "@@ -17,1 +17,1 @@\\n-n_layer = 2\\n+n_layer = 4"
   }}
 ]
 """
@@ -57,299 +74,318 @@ Format your output STRICTLY as a JSON list of dictionaries with this exact schem
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt}
     ]
-    print("Generating proposals...")
-    response = await query_model(PROPOSER_MODEL, messages, timeout=120.0)
-    if not response or not response.get('content'):
-        raise Exception("Failed to generate proposals.")
+
+    print("[Proposal Engine] Generating 3 candidate hypotheses...")
+    response = await query_model(config.PROPOSER_MODEL, messages, timeout=120.0)
     
+    if not response or not response.get('content'):
+        raise Exception("Failed to generate proposals from LLM.")
+
     content = response['content']
     if "```json" in content:
         json_str = content.split("```json")[1].split("```")[0].strip()
     else:
         json_str = content.strip()
-        
+
     proposals = json.loads(json_str)
-    # Basic validation
-    assert len(proposals) > 0, "Must generate at least 1 proposal"
+    assert isinstance(proposals, list) and len(proposals) > 0, "Must generate a non-empty proposal list"
     return proposals
 
-async def run_council_gate(proposals):
-    """Layer 3: Council Review & Selection"""
-    print("Running Council Review...")
+def validate_patch_security(patch: dict) -> bool:
+    """
+    IMMUTABLE EVALUATION BOUNDARY GUARD:
+    Ensures proposals ONLY modify train.py and do NOT tamper with evaluation,
+    ground-truth val_bpb calculation, or import shortcuts.
+    """
+    code_changes = patch.get("code_changes", "")
     
-    scored_proposals = []
-    
-    for p in proposals:
-        query = f"""Evaluate this proposed patch for train.py:
-Mechanism: {p['mechanism']}
-Risk: {p['risk']}
-Changes: {p['code_changes']}
+    # Block attempts to target evaluate.py or prepare.py
+    forbidden_targets = ["evaluate.py", "prepare.py", "val_bpb =", "val_bpb:"]
+    for forbidden in ["evaluate.py", "prepare.py"]:
+        if forbidden in code_changes:
+            print(f"[Security Guard] REJECTED {patch['id']}: Attempted to modify immutable file '{forbidden}'.")
+            return False
 
-Provide your evaluation STRICTLY as a JSON object with this schema:
-{{
-    "expected_improvement": 0.1,  // float (estimated delta in BPB)
-    "probability_of_success": 0.5, // float between 0 and 1
-    "implementation_cost": 0.1,   // float in GPU hours
-    "failure_severity": "low",    // string (low/medium/high)
-    "reasoning": "..."            // string
-}}
-"""
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": query}
-        ]
-        
-        response = await query_model(CHAIRMAN_MODEL, messages)
-        content = response['content']
-        if "```json" in content:
-            json_str = content.split("```json")[1].split("```")[0].strip()
-        else:
-            json_str = content.strip()
-            
-        evaluation = json.loads(json_str)
-        expected_improvement = evaluation.get("expected_improvement", 0.0)
-        prob_success = evaluation.get("probability_of_success", 0.0)
-        
-        # Calculate EV programmatically
-        ev = expected_improvement * prob_success
-        p["evaluation"] = evaluation
-        p["expected_value"] = ev
-        scored_proposals.append(p)
-        
-    # Select the highest expected-value experiment
-    scored_proposals.sort(key=lambda x: x["expected_value"], reverse=True)
-    best_hyp = scored_proposals[0]
-    
-    print(f"Council selected: {best_hyp['id']} with EV: {best_hyp['expected_value']:.4f}")
-    return best_hyp
-
-def apply_patch(train_path, patch):
-    """Apply the unified diff string to the target file."""
-    # Since writing a full patch applicator is complex in a mock script,
-    # we'll use a very simplified approach: we just let the patch fail if it's 
-    # not a valid unified diff that standard 'patch' can handle, or we 
-    # extract the new code manually if it's just a simple string replacement mock.
-    
-    # In our mock environment, code_changes might be simple diffs.
-    # Let's save the diff to a file and use the `patch` CLI tool.
-    with open("temp.patch", "w") as f:
-        f.write(patch["code_changes"] + "\n")
-        
-    try:
-        subprocess.run(["patch", train_path, "temp.patch"], check=True, capture_output=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"Patch failed: {e.stderr}")
+    # Block attempts to hardcode val_bpb inside train.py
+    if "val_bpb =" in code_changes or "val_bpb:" in code_changes:
+        print(f"[Security Guard] REJECTED {patch['id']}: Attempted to hardcode ground-truth val_bpb metric.")
         return False
-    finally:
-        if os.path.exists("temp.patch"):
-            os.remove("temp.patch")
 
-def execute_experiment(patch):
-    """Layer 4: Execution"""
-    train_path = "autoresearch/train.py"
-    backup_path = "autoresearch/train.py.bak"
+    return True
+
+def apply_patch_to_code(train_code: str, patch: dict) -> tuple[bool, str]:
+    """ Apply diff or replacement block to train.py """
+    patch_str = patch.get("code_changes", "")
     
-    # 1. Backup baseline
-    if os.path.exists(train_path):
-        shutil.copy2(train_path, backup_path)
-    
-    # 2. Apply patch
-    print(f"Applying patch {patch['id']} to {train_path}...")
-    success = apply_patch(train_path, patch)
-    if not success:
-        # Revert
-        if os.path.exists(backup_path):
-            shutil.copy2(backup_path, train_path)
-        return {
-            "status": "INVALID",
-            "val_bpb": None,
-            "mem_gb": None,
-            "runtime": 0,
-            "log": "Failed to apply patch."
-        }
-    
-    print("Executing experiment via modal_runner.py...")
-    cmd = "python modal_runner.py"
-    start_time = time.time()
-    
-    status = "FAILED"
-    try:
-        # In a real environment, this spins up the Modal runner
-        subprocess.run(cmd, shell=True, check=True)
-    except subprocess.CalledProcessError:
-        pass
+    # Simple line-based unified diff or substring replacement
+    lines = train_code.splitlines(keepends=True)
+
+    # Check if patch uses unified diff format @@ -line,count +line,count @@
+    if "@@" in patch_str:
+        temp_patch = "temp_proposal.patch"
+        write_file(temp_patch, patch_str + "\n")
         
-    runtime = time.time() - start_time
-    
-    # 3. Parse results from log
-    val_bpb = None
-    mem_gb = None
-    log_content = ""
+        try:
+            res = subprocess.run(["patch", config.TRAIN_SCRIPT, temp_patch], capture_output=True, text=True)
+            if res.returncode == 0:
+                patched_code = read_file(config.TRAIN_SCRIPT)
+                return True, patched_code
+            else:
+                print(f"[Patch Error] Unified diff failed: {res.stderr}")
+        except Exception as e:
+            print(f"[Patch Error] {e}")
+        finally:
+            if os.path.exists(temp_patch):
+                os.remove(temp_patch)
+
+    # Fallback: line-replacement matching
     try:
-        log_content = read_file("autoresearch/run.log")
-        # Check if the runner itself reported a specific error
-        if "TIMEOUT EXPIRED" in log_content:
-            status = "TIMEOUT"
-        elif "OutOfMemoryError" in log_content:
-            status = "OOM"
-        else:
-            status = "VALID" # Default assumed valid if log exists, unless metrics are missing
-            
-        for line in log_content.splitlines():
-            if line.startswith("val_bpb:"):
-                val_bpb = float(line.split()[1])
-            elif line.startswith("peak_vram_mb:"):
-                mem_gb = float(line.split()[1]) / 1024.0
+        new_code = train_code
+        for line in patch_str.splitlines():
+            if line.startswith("-") and not line.startswith("---"):
+                old_line = line[1:].strip()
+            elif line.startswith("+") and not line.startswith("+++"):
+                new_line = line[1:].strip()
+                if 'old_line' in locals() and old_line in new_code:
+                    new_code = new_code.replace(old_line, new_line, 1)
+
+        if new_code != train_code:
+            write_file(config.TRAIN_SCRIPT, new_code)
+            return True, new_code
     except Exception as e:
-        print(f"Failed to parse log: {e}")
-        status = "FAILED"
-        
-    # Priority 1: Make invalid evidence impossible to interpret as success
-    if val_bpb is None and status == "VALID":
-        status = "METRIC_MISSING"
+        print(f"[Patch Error] Fallback replacement failed: {e}")
 
-    # Restore baseline for the next experiment (or keep it if we accept it, but typically we want isolated trials)
-    if os.path.exists(backup_path):
-        shutil.copy2(backup_path, train_path)
-        
-    return {
-        "status": status,
-        "val_bpb": val_bpb,
-        "mem_gb": round(mem_gb, 1) if mem_gb else None,
-        "runtime": runtime,
-        "log": log_content
-    }
+    return False, train_code
 
-async def run_postmortem(experiment_results, patch, baseline_bpb):
-    """Layer 6: Postmortem Council"""
-    user_prompt = f"""Perform a postmortem on this experiment.
-    
+def execute_experiment(patch: dict) -> dict:
+    """
+    Layer 5: Isolated Execution Layer.
+    Runs PyTorch training and immutable evaluator.
+    Returns status, val_bpb, val_loss, peak_vram_mb, runtime.
+    """
+    train_path = config.TRAIN_SCRIPT
+    backup_path = train_path + ".bak"
+
+    # Backup current baseline code
+    shutil.copy2(train_path, backup_path)
+
+    # 1. Security Check
+    if not validate_patch_security(patch):
+        return {"status": "SECURITY_VIOLATION", "val_bpb": None, "val_loss": None, "runtime": 0, "log": "Security violation"}
+
+    # 2. Apply Patch
+    print(f"[Execution] Applying patch {patch['id']}...")
+    success, patched_code = apply_patch_to_code(read_file(backup_path), patch)
+    if not success:
+        shutil.copy2(backup_path, train_path) # Revert
+        return {"status": "INVALID_PATCH", "val_bpb": None, "val_loss": None, "runtime": 0, "log": "Patch application failed"}
+
+    start_time = time.time()
+    print(f"[Execution] Running PyTorch training script ({config.TRAIN_SCRIPT})...")
+
+    # Run PyTorch training
+    try:
+        train_res = subprocess.run(
+            [sys.executable, config.TRAIN_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=config.EXECUTION_TIMEOUT_SEC
+        )
+        train_log = train_res.stdout + "\n" + train_res.stderr
+        
+        if train_res.returncode != 0:
+            print(f"[Execution Error] PyTorch training crashed:\n{train_log[-500:]}")
+            shutil.copy2(backup_path, train_path) # Revert
+            return {"status": "CRASH", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": train_log}
+
+    except subprocess.TimeoutExpired:
+        print("[Execution Error] PyTorch training timed out.")
+        shutil.copy2(backup_path, train_path) # Revert
+        return {"status": "TIMEOUT", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": "Timeout expired"}
+
+    # Run Immutable Ground-Truth Evaluator
+    print(f"[Execution] Running Immutable Ground-Truth Evaluator ({config.EVALUATE_SCRIPT})...")
+    try:
+        eval_res = subprocess.run(
+            [sys.executable, config.EVALUATE_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        eval_log = eval_res.stdout
+        
+        # Parse JSON output from evaluate.py
+        eval_data = json.loads(eval_log.strip().splitlines()[-1])
+        runtime = time.time() - start_time
+
+        return {
+            "status": eval_data.get("status", "VALID"),
+            "val_bpb": eval_data.get("val_bpb"),
+            "val_loss": eval_data.get("val_loss"),
+            "peak_vram_mb": eval_data.get("peak_vram_mb"),
+            "runtime": round(runtime, 2),
+            "log": train_log + "\n" + eval_log,
+            "backup_path": backup_path # Needed for Keep-or-Revert decision
+        }
+
+    except Exception as e:
+        print(f"[Execution Error] Evaluation failed: {e}")
+        shutil.copy2(backup_path, train_path) # Revert
+        return {"status": "METRIC_MISSING", "val_bpb": None, "val_loss": None, "runtime": time.time() - start_time, "log": str(e)}
+
+async def run_postmortem(results: dict, patch: dict, baseline_bpb: float) -> str:
+    """ Layer 6: Postmortem Council """
+    status = results.get("status")
+    val_bpb = results.get("val_bpb")
+
+    # POSTMORTEM FALSIFICATION GUARD:
+    # If metrics are missing or execution failed, force postmortem to state failure clearly.
+    if status != "VALID" or val_bpb is None:
+        return (
+            f"POSTMORTEM ANALYSIS for {patch['id']}:\n"
+            f"Execution Status: {status}.\n"
+            f"Failure Reason: Experiment failed during execution or evaluation. "
+            f"No empirical metric improvements recorded."
+        )
+
+    user_prompt = f"""Perform a rigorous postmortem on this ML experiment.
+
 HYPOTHESIS: {patch['id']} - {patch['mechanism']}
-APPLIED DIFF:
+APPLIED CODE DIFF:
 {patch['code_changes']}
 
 BASELINE BPB: {baseline_bpb}
-TREATMENT BPB: {experiment_results['val_bpb']}
-OUTCOME STATUS: {experiment_results['status']}
-LOG SNIPPET:
-{experiment_results['log'][-2000:]}
+TREATMENT BPB: {val_bpb}
+DELTA BPB: {val_bpb - baseline_bpb:.4f}
+OUTCOME STATUS: {status}
 
-Answer these questions:
-1. What changed mathematically and computationally?
-2. Was the hypothesis validated?
-3. What evidence supports/contradicts?
-4. What should be attempted next?
+Answer:
+1. What changed computationally and in terms of model performance?
+2. Was the hypothesis empirically validated?
+3. What evidence supports or contradicts the mechanism?
+4. What next hypothesis should be explored?
 """
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt}
     ]
-    print("Running Postmortem...")
-    response = await query_model(CHAIRMAN_MODEL, messages)
-    return response['content'] if response else "Postmortem failed."
+    response = await query_model(config.CHAIRMAN_MODEL, messages)
+    return response.get('content', 'Postmortem complete.')
 
-def update_research_state(patch, results, postmortem, baseline_bpb):
-    state_path = "memory/research_state.json"
-    state = {}
-    if os.path.exists(state_path):
-        with open(state_path, "r") as f:
-            state = json.load(f)
-            
-    val_bpb = results["val_bpb"]
-    delta = (val_bpb - baseline_bpb) if val_bpb is not None else None
-    
-    # Log hypothesis outcome
-    state.setdefault("hypotheses", {})[patch["id"]] = {
-        "status": results["status"],
-        "confidence": patch["evaluation"]["probability_of_success"], # Dummy before confidence
-        "delta_bpb": delta,
-        "postmortem": postmortem
-    }
-    
-    if results["status"] == "VALID" and delta is not None and delta < 0:
-        state["proven_wins"].append(patch["id"])
-        state["current_best"]["val_bpb"] = val_bpb
-        state["current_best"]["experiment_id"] = patch["id"]
-    elif results["status"] in ["VALID", "FAILED", "OOM", "TIMEOUT"]:
-        state["proven_failures"].append(patch["id"])
-        
-    state.setdefault("trajectory", []).append({
-        "timestamp": datetime.now().isoformat(),
-        "hypothesis_id": patch["id"],
-        "delta": delta,
-        "status": results["status"]
-    })
-    
-    with open(state_path, "w") as f:
-        json.dump(state, f, indent=2)
-
-def log_to_ledger(patch, expected_improvement, results, baseline_bpb, conf_before):
-    ledger_path = "research_ledger.tsv"
-    
-    # Priority 6: Ledger format
-    # Hypothesis ID | Parent Hypothesis | Patch Applied | Expected Outcome | Actual Outcome | Confidence Before | Confidence After
-    
+def log_to_ledger(patch: dict, results: dict, baseline_bpb: float):
+    """ Record experiment into research_ledger.tsv """
+    ledger_path = config.RESEARCH_LEDGER_PATH
     if not os.path.exists(ledger_path):
-        with open(ledger_path, "w") as f:
-            f.write("Hypothesis ID\tParent Hypothesis\tPatch Applied\tExpected Outcome\tActual Outcome\tConfidence Before\tConfidence After\n")
-            
-    val_bpb = results["val_bpb"]
-    delta = (val_bpb - baseline_bpb) if val_bpb is not None else "N/A"
-    actual_outcome = f"{results['status']} (Delta: {delta})"
-    conf_after = "High" if results["status"] == "VALID" and delta != "N/A" and delta < 0 else "Low"
+        write_file(
+            ledger_path,
+            "Hypothesis ID\tParent Hypothesis\tPatch Applied\tExpected Outcome\tActual Outcome\tConfidence Before\tConfidence After\n"
+        )
+
+    val_bpb = results.get("val_bpb")
+    delta = (val_bpb - baseline_bpb) if (val_bpb is not None and baseline_bpb is not None) else "N/A"
+    actual_outcome = f"{results['status']} (Val BPB: {val_bpb}, Delta: {delta})"
     
-    # Basic inline diff preview
-    patch_preview = patch['code_changes'].replace("\n", "\\n")[:50]
+    conf_before = patch.get("evaluation", {}).get("probability_of_success", 0.5)
+    conf_after = "High" if (results["status"] == "VALID" and val_bpb is not None and baseline_bpb is not None and val_bpb < baseline_bpb) else "Low"
     
-    row = f"{patch['id']}\tBaseline\t{patch_preview}...\tDecrease BPB by {expected_improvement}\t{actual_outcome}\t{conf_before}\t{conf_after}\n"
-    
+    patch_snippet = patch.get("code_changes", "").replace("\n", "\\n")[:60]
+
+    row = f"{patch['id']}\t{patch.get('parent_id', 'root')}\t{patch_snippet}\tDecrease BPB\t{actual_outcome}\t{conf_before}\t{conf_after}\n"
     with open(ledger_path, "a", encoding="utf-8") as f:
         f.write(row)
 
-async def main_loop():
-    print("=== Starting HypothesisOS Orchestrator ===")
+async def main_autonomous_loop(max_experiments: int = config.DEFAULT_MAX_EXPERIMENTS):
+    print("=========================================================")
+    print("=== HypothesisOS Production Autonomous Research Loop ===")
+    print("=========================================================")
     
-    # 0. Load State
-    state_path = "memory/research_state.json"
-    if not os.path.exists(state_path):
-        print("Error: Research state missing.")
-        return
-        
-    with open(state_path, "r") as f:
-        state = json.load(f)
+    tree = ResearchTree()
     
-    baseline_bpb = state.get("current_best", {}).get("val_bpb", 0.0)
-    
-    plan_content = read_file("research_plan.md")
-    train_code = read_file("autoresearch/train.py")
-    
-    # 1. Proposal
-    proposals = await generate_proposals(plan_content, train_code)
-    
-    # 2. Critique
-    best_patch = await run_council_gate(proposals)
-    
-    # 3. Execution
-    results = execute_experiment(best_patch)
-    
-    # 4. Postmortem
-    postmortem = await run_postmortem(results, best_patch, baseline_bpb)
-    
-    # 5. Ledger & State Update
-    update_research_state(best_patch, results, postmortem, baseline_bpb)
-    log_to_ledger(
-        patch=best_patch,
-        expected_improvement=best_patch["evaluation"]["expected_improvement"],
-        results=results,
-        baseline_bpb=baseline_bpb,
-        conf_before=best_patch["evaluation"]["probability_of_success"]
-    )
-    
-    print("\n=== Experiment Complete ===")
-    print(f"Winning Hypothesis: {best_patch['id']}")
-    print(f"Result: {results['val_bpb']} BPB (Status: {results['status']})")
-    print(f"Postmortem:\n{postmortem}")
+    # Run initial baseline evaluation if needed
+    if tree.data["current_best"]["val_bpb"] == float("inf"):
+        print("[Setup] Running initial baseline evaluation...")
+        eval_res = subprocess.run([sys.executable, config.EVALUATE_SCRIPT], capture_output=True, text=True)
+        try:
+            data = json.loads(eval_res.stdout.strip().splitlines()[-1])
+            tree.data["current_best"]["val_bpb"] = data["val_bpb"]
+            tree.data["current_best"]["val_loss"] = data["val_loss"]
+            tree.save()
+            print(f"[Setup] Baseline established: {data['val_bpb']} BPB (Val Loss: {data['val_loss']})")
+        except Exception:
+            print("[Setup Warning] Could not parse initial baseline evaluation.")
+
+    exp_counter = 0
+
+    # Continuous Autonomous Research Loop
+    while exp_counter < max_experiments:
+        exp_counter += 1
+        print(f"\n--- [AUTONOMOUS ITERATION {exp_counter}/{max_experiments}] ---")
+
+        baseline_bpb = tree.data["current_best"]["val_bpb"]
+        print(f"Current Best Baseline: {baseline_bpb} BPB (Node: {tree.data['current_best']['hypothesis_id']})")
+
+        plan_content = read_file(config.RESEARCH_PLAN_PATH)
+        train_code = read_file(config.TRAIN_SCRIPT)
+
+        # 1. Proposal Generation (Layer 2)
+        try:
+            proposals = await generate_proposals(plan_content, train_code, tree.data)
+        except Exception as e:
+            print(f"[Loop Error] Proposal generation failed: {e}")
+            break
+
+        # 2. Multi-Agent Anonymized Council Review (Layer 3)
+        evaluated_proposals = await run_anonymized_council_review(proposals)
+        best_hypothesis = evaluated_proposals[0]
+
+        print(f"[Experiment Selection] Selected Hypothesis: {best_hypothesis['id']}")
+        print(f"  Mechanism: {best_hypothesis['mechanism']}")
+        print(f"  Utility EV Score: {best_hypothesis['utility_ev']}")
+
+        # Register Node in Research Tree
+        node_id = tree.add_experiment_node(best_hypothesis)
+        best_hypothesis["parent_id"] = tree.data["active_node_id"]
+
+        # 3. Execution (Layer 5)
+        results = execute_experiment(best_hypothesis)
+
+        # 4. Postmortem (Layer 6)
+        postmortem = await run_postmortem(results, best_hypothesis, baseline_bpb)
+
+        # 5. KEEP-OR-REVERT SEMANTICS
+        val_bpb = results.get("val_bpb")
+        is_win = (results["status"] == "VALID" and val_bpb is not None and val_bpb < baseline_bpb)
+        backup_path = results.get("backup_path", config.TRAIN_SCRIPT + ".bak")
+
+        if is_win:
+            print(f"🎉 [WINNER!] {best_hypothesis['id']} improved BPB from {baseline_bpb} to {val_bpb} (Delta: {val_bpb - baseline_bpb:.4f})")
+            print(f"[Keep-or-Revert] KEPT patch in {config.TRAIN_SCRIPT}. New baseline established!")
+            # Clean up backup
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+        else:
+            print(f"❌ [REJECTED] {best_hypothesis['id']} failed to beat baseline (Status: {results['status']}, Val BPB: {val_bpb}).")
+            print(f"[Keep-or-Revert] REVERTED {config.TRAIN_SCRIPT} to previous baseline.")
+            if os.path.exists(backup_path):
+                shutil.copy2(backup_path, config.TRAIN_SCRIPT)
+                os.remove(backup_path)
+
+        # 6. Update Research Tree & Ledger
+        tree.update_experiment_result(node_id, results, postmortem, baseline_bpb)
+        log_to_ledger(best_hypothesis, results, baseline_bpb)
+
+        print(f"[Iteration {exp_counter} Complete] Research Tree state saved.")
+
+    print("\n=========================================================")
+    print("=== Autonomous Research Search Session Complete ===")
+    print(f"Final Best Metric: {tree.data['current_best']['val_bpb']} BPB")
+    print(f"Total Proven Wins: {len(tree.data['proven_wins'])}")
+    print(f"Total Proven Failures: {len(tree.data['proven_failures'])}")
+    print("=========================================================")
 
 if __name__ == "__main__":
-    asyncio.run(main_loop())
+    parser = argparse.ArgumentParser(description="HypothesisOS Autonomous Researcher")
+    parser.add_argument("--max-experiments", type=int, default=config.DEFAULT_MAX_EXPERIMENTS, help="Maximum number of experiments")
+    args = parser.parse_args()
+
+    asyncio.run(main_autonomous_loop(max_experiments=args.max_experiments))
