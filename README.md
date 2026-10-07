@@ -6,6 +6,8 @@ HypothesisOS is an empirical ML systems framework designed to execute autonomous
 
 ---
 
+![HypothesisOS System Architecture Schema](assets/hypothesis_os_schema.jpg)
+
 ## Prior Art & Related Work
 
 HypothesisOS builds upon and contrasts with key research in autonomous scientific discovery:
@@ -22,7 +24,6 @@ HypothesisOS builds upon and contrasts with key research in autonomous scientifi
 
 ## System Architecture
 
-![HypothesisOS System Architecture Schema](assets/hypothesis_os_schema.jpg)
 
 ```mermaid
 graph TD
